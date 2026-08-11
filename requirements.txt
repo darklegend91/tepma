@@ -1,0 +1,8 @@
+fastapi
+python-dotenv
+python-multipart
+faster-whisper
+kokoro 
+soundfile 
+httpx 
+fpdf2

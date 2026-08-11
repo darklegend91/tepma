@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TePMA — Document Assistant</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <h1>📄 TePMA — Document Assistant</h1>
+  <nav><a href="/">← Interview</a> &nbsp;|&nbsp; <a href="/test">STT / TTS tools</a></nav>
+
+  <div class="card">
+    <h2>Ask by voice</h2>
+    <div class="row">
+      <button id="askBtn">🎙️ Ask</button>
+      <div class="meter"><div id="meterFill"></div></div>
+      <span class="status" id="askStatus">Say e.g. "print my leave application" or "show the feedback form".</span>
+    </div>
+    <div id="transcript"></div>
+    <div id="matchCard" style="display:none; margin-top:0.8rem; padding:0.8rem; border-radius:10px; background:color-mix(in srgb, #4f46e5 10%, transparent)">
+      <div id="matchTitle" style="font-weight:600; font-size:1.05rem"></div>
+      <div id="matchReason" class="status" style="margin:0.3rem 0 0.7rem"></div>
+      <div class="row">
+        <a id="matchOpen" target="_blank"><button>Open in new tab</button></a>
+      </div>
+    </div>
+    <iframe id="docFrame" style="display:none; width:100%; height:70vh; border:1px solid color-mix(in srgb, currentColor 20%, transparent); border-radius:10px; margin-top:0.8rem"></iframe>
+  </div>
+
+  <div class="card">
+    <h2>Document library</h2>
+    <div id="docList" class="status">Loading…</div>
+  </div>
+
+<script src="/static/voice.js"></script>
+<script>
+let currentMatch = null;
+
+async function loadDocs() {
+  const res = await fetch("/documents/list");
+  const data = await res.json();
+  docList.innerHTML = "";
+  data.documents.forEach(d => {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex; justify-content:space-between; align-items:center; padding:0.35rem 0";
+    const link = document.createElement("a");
+    link.href = "/documents/view/" + d.filename;
+    link.target = "_blank";
+    link.textContent = d.title;
+    row.appendChild(link);
+    docList.appendChild(row);
+  });
+}
+loadDocs();
+
+askBtn.addEventListener("click", async () => {
+  const s = activeSession();
+  if (s) { s.finish(); return; }
+  askBtn.classList.add("active");
+  matchCard.style.display = "none";
+  docFrame.style.display = "none";
+  transcript.innerHTML = "<span class='partial'>…</span>";
+  try {
+    const query = await listen({
+      wsPath: "/documents/listen",
+      onPartial: t => { transcript.innerHTML = ""; const sp = document.createElement("span"); sp.className = "partial"; sp.textContent = t; transcript.appendChild(sp); },
+      onStatus: t => { askStatus.textContent = t; },
+      meterEl: meterFill,
+    });
+    askBtn.classList.remove("active");
+    transcript.textContent = query ?? "";
+    if (!query) { askStatus.textContent = "Heard nothing."; return; }
+
+    askStatus.textContent = "Finding document…";
+    const res = await fetch("/documents/find", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+    });
+    const data = await res.json();
+    if (!data.match) { askStatus.textContent = "No match: " + data.reason; return; }
+
+    currentMatch = data.match;
+    matchTitle.textContent = data.match.title;
+    matchReason.textContent = data.reason;
+    matchOpen.href = "/documents/view/" + data.match.filename;
+    matchCard.style.display = "";
+    docFrame.src = "/documents/view/" + data.match.filename;
+    docFrame.style.display = "";
+    askStatus.textContent = "Done.";
+  } catch (err) {
+    askBtn.classList.remove("active");
+    askStatus.textContent = "Error: " + err.message;
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TePMA — Automated Interview</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  .stage { text-align:center; padding:1.5rem 1rem; }
+  #bigBtn {
+    font-size:1.25rem; padding:1.1rem 2.4rem; border-radius:999px;
+    box-shadow:0 6px 20px rgba(79,70,229,.35);
+  }
+  #bigBtn.active { background:#dc2626; box-shadow:0 6px 20px rgba(220,38,38,.35); }
+  #phase { font-size:1.05rem; margin-top:1rem; min-height:1.5em; }
+  #sub { font-size:.9rem; opacity:.6; min-height:1.2em; }
+  .bigmeter { width:min(320px,80%); height:10px; border-radius:5px; margin:1rem auto 0;
+              background:color-mix(in srgb, currentColor 15%, transparent); overflow:hidden; }
+  .bigmeter > div { height:100%; width:0%; background:#22c55e; transition:width 80ms linear; }
+  .steps { display:flex; justify-content:center; gap:.4rem; margin-top:1.2rem; flex-wrap:wrap; }
+  .step { font-size:.78rem; padding:.28rem .7rem; border-radius:999px; opacity:.4;
+          border:1px solid color-mix(in srgb, currentColor 30%, transparent); }
+  .step.on { opacity:1; border-color:#4f46e5; background:color-mix(in srgb,#4f46e5 18%,transparent); }
+  .step.done { opacity:.85; border-color:#22c55e; }
+  dialog {
+    border:none; border-radius:14px; padding:1.4rem; max-width:min(440px,90vw);
+    background:Canvas; color:CanvasText;
+    box-shadow:0 20px 60px rgba(0,0,0,.35);
+  }
+  dialog::backdrop { background:rgba(0,0,0,.5); }
+  dialog h3 { margin:0 0 .6rem; font-size:1.1rem; }
+  dialog p { margin:0 0 1.1rem; line-height:1.5; }
+  .dlg-actions { display:flex; gap:.6rem; justify-content:flex-end; }
+  .ghost { background:transparent; border:1px solid color-mix(in srgb,currentColor 30%,transparent); color:inherit; }
+</style>
+</head>
+<body>
+  <h1>🎙️ TePMA — Automated Interview</h1>
+  <nav><a href="/">Manual interview</a> &nbsp;|&nbsp; <a href="/docs-assistant">Documents</a></nav>
+
+  <div class="card stage">
+    <button id="bigBtn">Start interview</button>
+    <div id="phase">Click start. The interview runs on its own and prints your resume at the end.</div>
+    <div id="sub"></div>
+    <div class="bigmeter"><div id="meterFill"></div></div>
+    <div class="steps">
+      <span class="step" id="s-interview">Interview</span>
+      <span class="step" id="s-profile">Build profile</span>
+      <span class="step" id="s-pdf">Make resume</span>
+      <span class="step" id="s-print">Print</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Conversation</h2>
+    <div id="chatLog"></div>
+  </div>
+
+  <div class="card" id="resultCard" style="display:none">
+    <h2>Result</h2>
+    <div class="row">
+      <a id="pdfLink" target="_blank"><button>Open resume PDF</button></a>
+      <a id="docxLink"><button class="ghost">Download Word</button></a>
+      <button id="reprintBtn" class="ghost">Print again</button>
+    </div>
+    <div id="corrections" class="status" style="margin-top:.8rem"></div>
+  </div>
+
+  <dialog id="dlg">
+    <h3 id="dlgTitle">Something went wrong</h3>
+    <p id="dlgBody"></p>
+    <div class="dlg-actions">
+      <button id="dlgRetry" class="ghost" style="display:none">Retry</button>
+      <button id="dlgOk">OK</button>
+    </div>
+  </dialog>
+
+<script src="/static/voice.js"></script>
+<script>
+let sessionId = null, running = false, lastResult = null, retryAction = null;
+
+// ---------- popup ----------
+function popup(title, body, onRetry) {
+  dlgTitle.textContent = title;
+  dlgBody.textContent = body;
+  retryAction = onRetry || null;
+  dlgRetry.style.display = onRetry ? "" : "none";
+  if (!dlg.open) dlg.showModal();
+}
+dlgOk.addEventListener("click", () => dlg.close());
+dlgRetry.addEventListener("click", () => { dlg.close(); const a = retryAction; retryAction = null; a?.(); });
+
+// ---------- ui helpers ----------
+const steps = ["interview", "profile", "pdf", "print"];
+function setStep(name, state) {
+  const el = document.getElementById("s-" + name);
+  el.classList.toggle("on", state === "on");
+  el.classList.toggle("done", state === "done");
+}
+function resetSteps() { steps.forEach(s => { setStep(s, ""); }); }
+function say(phase, sub = "") { document.getElementById("phase").textContent = phase; document.getElementById("sub").textContent = sub; }
+function addMsg(role, text, partial = false) {
+  const d = document.createElement("div");
+  d.className = `msg ${role}` + (partial ? " partial" : "");
+  d.textContent = text;
+  chatLog.appendChild(d);
+  chatLog.scrollTop = chatLog.scrollHeight;
+  return d;
+}
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `Server error ${res.status}`);
+  return data;
+}
+
+// ---------- the automated loop ----------
+async function runAuto() {
+  running = true;
+  sessionId = null;
+  lastResult = null;
+  chatLog.innerHTML = "";
+  resultCard.style.display = "none";
+  resetSteps();
+  bigBtn.textContent = "Stop";
+  bigBtn.classList.add("active");
+  setStep("interview", "on");
+
+  try {
+    say("Starting…");
+    const start = await api("/auto/start");
+    sessionId = start.session_id;
+
+    let reply = start.reply, done = false;
+    while (running) {
+      addMsg("assistant", reply);
+      say("Interviewer speaking…");
+      try { await speak("/auto/speak", reply); }
+      catch { /* keep going silently: text is on screen */ }
+      if (!running) break;
+      if (done) break;
+
+      // listen for the answer
+      const partial = addMsg("user", "…", true);
+      say("Listening…", "Speak now. A 3-second pause ends your answer.");
+      let answer;
+      try {
+        answer = await listen({
+          wsPath: "/auto/listen",
+          onPartial: t => { partial.textContent = t || "…"; chatLog.scrollTop = chatLog.scrollHeight; },
+          onStatus: t => document.getElementById("sub").textContent = t,
+          meterEl: meterFill,
+        });
+      } catch (err) {
+        partial.remove();
+        throw new Error("Microphone or connection problem: " + err.message);
+      }
+      partial.remove();
+      if (!running) break;
+
+      if (!answer) {                       // silence: re-ask once rather than dying
+        addMsg("user", "(no speech detected)");
+        reply = "Sorry, I did not catch that. Could you say it again?";
+        continue;
+      }
+      addMsg("user", answer);
+
+      say("Thinking…");
+      const turn = await api("/auto/turn", { session_id: sessionId, answer });
+      reply = turn.reply;
+      done = turn.done;
+    }
+
+    if (!running) { say("Stopped."); return; }
+
+    // ----- automatic finish -----
+    setStep("interview", "done");
+    setStep("profile", "on");
+    say("Building your profile…", "Reading the whole conversation. This takes a few seconds.");
+    const result = await api("/auto/finish", { session_id: sessionId });
+    lastResult = result;
+    setStep("profile", "done");
+    setStep("pdf", "done");
+    setStep("print", result.printed ? "done" : "on");
+
+    pdfLink.href = result.pdf_url;
+    docxLink.href = result.docx_url;
+    resultCard.style.display = "";
+    corrections.textContent = (result.corrections || []).length
+      ? "Auto-corrected: " + result.corrections.map(c => `${c.from} → ${c.to}`).join("; ")
+      : "";
+
+    if (result.printed) {
+      say("Done — your resume is printing.", "");
+    } else {
+      say("Resume ready, but printing failed.", "It is saved — you can open or download it below.");
+      popup("Printer problem", result.print_error +
+            "\n\nYour resume was still generated and saved.",
+            () => reprint());
+    }
+  } catch (err) {
+    say("Interview stopped.", "");
+    popup("Something went wrong", err.message, sessionId ? () => finishOnly() : null);
+  } finally {
+    running = false;
+    bigBtn.textContent = "Start interview";
+    bigBtn.classList.remove("active");
+  }
+}
+
+// retry just the finish step (interview already captured)
+async function finishOnly() {
+  try {
+    say("Retrying…");
+    const result = await api("/auto/finish", { session_id: sessionId });
+    lastResult = result;
+    pdfLink.href = result.pdf_url;
+    docxLink.href = result.docx_url;
+    resultCard.style.display = "";
+    say(result.printed ? "Done — your resume is printing." : "Resume ready (printing failed).");
+    if (!result.printed) popup("Printer problem", result.print_error, () => reprint());
+  } catch (err) { popup("Still failing", err.message, null); }
+}
+
+async function reprint() {
+  if (!lastResult) return;
+  try {
+    const r = await api("/auto/finish", { session_id: lastResult.session_id });
+    if (r.printed) say("Sent to the printer.");
+    else popup("Printer problem", r.print_error, null);
+  } catch (err) { popup("Could not print", err.message, null); }
+}
+
+bigBtn.addEventListener("click", () => {
+  if (running) {
+    running = false;
+    activeSession()?.abort();
+    say("Stopping…");
+  } else {
+    runAuto();
+  }
+});
+reprintBtn.addEventListener("click", reprint);
+</script>
+</body>
+</html>

@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TePMA — Resume Interview</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <h1>🎙️ TePMA — Resume Interview</h1>
+  <nav><a href="/auto">🤖 Automated interview</a> &nbsp;|&nbsp; <a href="/docs-assistant">📄 Document assistant</a> &nbsp;|&nbsp; <a href="/test">STT / TTS test tools</a></nav>
+
+  <div class="card">
+    <h2>Interview</h2>
+    <div class="row">
+      <button id="interviewBtn">Start interview</button>
+      <div class="meter"><div id="meterFill"></div></div>
+      <span class="status" id="intStatus">The interviewer will greet you, then just talk. 3s of silence ends each answer.</span>
+    </div>
+    <div id="chatLog"></div>
+    <div class="row" style="margin-top:0.9rem">
+      <button id="finishBtn" disabled>Generate resume</button>
+      <button id="endPrintBtn">End interview &amp; print</button>
+      <span class="status" id="finishStatus"></span>
+    </div>
+    <div class="row" style="margin-top:0.6rem">
+      <a href="/interview/resume/latest/docx"><button>Download Word (.docx)</button></a>
+      <input type="email" id="emailTo" placeholder="email@example.com"
+             style="font:inherit; padding:0.6rem; border-radius:8px; border:1px solid color-mix(in srgb, currentColor 25%, transparent); background:transparent; color:inherit">
+      <button id="emailBtn">Email resume</button>
+      <span class="status" id="emailStatus"></span>
+    </div>
+  </div>
+
+  <div class="card" id="resultCard" style="display:none">
+    <h2>Your Resume</h2>
+    <div class="row">
+      <a id="pdfLink" target="_blank"><button>Open resume PDF</button></a>
+    </div>
+    <details style="margin-top:0.8rem">
+      <summary style="cursor:pointer;opacity:0.7;font-size:0.9rem">Extracted profile (JSON)</summary>
+      <pre id="profileJson" style="overflow-x:auto;font-size:0.8rem;line-height:1.5"></pre>
+    </details>
+  </div>
+
+<script src="/static/voice.js"></script>
+<script>
+let interviewing = false;
+let messages = [];
+
+function addMsg(role, text, partial = false) {
+  const div = document.createElement("div");
+  div.className = `msg ${role}` + (partial ? " partial" : "");
+  div.textContent = text;
+  chatLog.appendChild(div);
+  chatLog.scrollTop = chatLog.scrollHeight;
+  return div;
+}
+
+async function chatReply() {
+  const res = await fetch("/interview/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages }),
+  });
+  if (!res.ok) throw new Error("LLM error: " + res.status);
+  return (await res.json()).reply;
+}
+
+async function runInterview() {
+  interviewing = true;
+  interviewBtn.textContent = "Stop interview";
+  interviewBtn.classList.add("active");
+  chatLog.innerHTML = "";
+  messages = [{ role: "user", content: "(The candidate has joined the voice call. Greet them and begin the interview.)" }];
+
+  try {
+    while (interviewing) {
+      intStatus.textContent = "Thinking…";
+      const reply = await chatReply();
+      if (!interviewing) break;
+      messages.push({ role: "assistant", content: reply });
+      addMsg("assistant", reply);
+      intStatus.textContent = "Speaking…";
+      await speak("/interview/speak", reply);
+      if (!interviewing) break;
+
+      const partialDiv = addMsg("user", "…", true);
+      const answer = await listen({
+        wsPath: "/interview/listen",
+        onPartial: t => { partialDiv.textContent = t || "…"; chatLog.scrollTop = chatLog.scrollHeight; },
+        onStatus: t => { intStatus.textContent = t; },
+        meterEl: meterFill,
+      });
+      if (answer === null || !interviewing) { partialDiv.remove(); break; }
+      partialDiv.remove();
+      if (answer) { addMsg("user", answer); messages.push({ role: "user", content: answer }); }
+      else addMsg("user", "(no speech detected)");
+      finishBtn.disabled = messages.length < 3;
+    }
+  } catch (err) {
+    intStatus.textContent = "Error: " + err.message;
+  }
+  interviewing = false;
+  interviewBtn.textContent = "Start interview";
+  interviewBtn.classList.remove("active");
+  if (!intStatus.textContent.startsWith("Error")) intStatus.textContent = "Interview ended.";
+}
+
+let lastPdfUrl = null;
+
+endPrintBtn.addEventListener("click", async () => {
+  // End any running interview, then print directly on the system printer.
+  if (interviewing) { interviewing = false; activeSession()?.abort(); }
+  endPrintBtn.disabled = true;
+  finishStatus.textContent = "Printing…";
+  try {
+    const res = await fetch("/interview/print", { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    finishStatus.textContent = res.ok
+      ? `Printed (session ${data.session}).`
+      : (data.detail || "Printer error");
+  } catch (err) {
+    finishStatus.textContent = "Printer error: " + err.message;
+  }
+  endPrintBtn.disabled = false;
+});
+
+emailBtn.addEventListener("click", async () => {
+  const to = emailTo.value.trim();
+  if (!to.includes("@")) { emailStatus.textContent = "Enter a valid email address."; return; }
+  emailBtn.disabled = true;
+  emailStatus.textContent = "Sending…";
+  try {
+    const res = await fetch("/interview/email", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to }),
+    });
+    const data = await res.json().catch(() => ({}));
+    emailStatus.textContent = res.ok ? `Sent to ${data.to}.` : (data.detail || "Send failed");
+  } catch (err) {
+    emailStatus.textContent = "Error: " + err.message;
+  }
+  emailBtn.disabled = false;
+});
+
+finishBtn.addEventListener("click", async () => {
+  // stop any ongoing listening first
+  if (interviewing) { interviewing = false; activeSession()?.abort(); }
+  finishBtn.disabled = true;
+  finishStatus.textContent = "Extracting profile & building PDF… (can take ~30s)";
+  try {
+    const res = await fetch("/interview/finish", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages }),
+    });
+    if (!res.ok) throw new Error("Server error " + res.status);
+    const data = await res.json();
+    profileJson.textContent = JSON.stringify(data.profile, null, 2);
+    lastPdfUrl = data.pdf_url;
+    pdfLink.href = data.pdf_url;
+    resultCard.style.display = "";
+    resultCard.scrollIntoView({ behavior: "smooth" });
+    finishStatus.textContent = "Done — resume ready below.";
+  } catch (err) {
+    finishStatus.textContent = "Error: " + err.message;
+  }
+  finishBtn.disabled = false;
+});
+
+interviewBtn.addEventListener("click", () => {
+  if (interviewing) {
+    interviewing = false;
+    activeSession()?.abort();
+    intStatus.textContent = "Stopping…";
+  } else {
+    runInterview();
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TePMA — STT / TTS Test</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <h1>🔧 TePMA — STT / TTS Test Tools</h1>
+  <nav><a href="/">← Back to interview</a></nav>
+
+  <div class="card">
+    <h2>Live Voice → Text</h2>
+    <div class="row">
+      <button id="listenBtn">Start listening</button>
+      <div class="meter"><div id="meterFill"></div></div>
+      <span class="status" id="sttStatus">Click start, talk, stops after 3s of silence.</span>
+    </div>
+    <div id="transcript"></div>
+  </div>
+
+  <div class="card">
+    <h2>File → Text</h2>
+    <div class="row">
+      <input type="file" id="sttFile" accept="audio/*">
+      <button id="sttFileBtn">Transcribe file</button>
+      <span class="status" id="sttFileStatus"></span>
+    </div>
+    <div id="fileTranscript" style="padding-top:0.5rem"></div>
+  </div>
+
+  <div class="card">
+    <h2>Text → Voice</h2>
+    <textarea id="ttsText">Hello! I am the TePMA voice engine, running fully on your own machine.</textarea>
+    <div class="row" style="margin-top:0.6rem">
+      <button id="speakBtn">Speak</button>
+      <span class="status" id="ttsStatus"></span>
+    </div>
+  </div>
+
+<script src="/static/voice.js"></script>
+<script>
+listenBtn.addEventListener("click", async () => {
+  const s = activeSession();
+  if (s) { s.finish(); return; }
+  listenBtn.textContent = "Stop";
+  listenBtn.classList.add("active");
+  transcript.innerHTML = "<span class='partial'>…</span>";
+  try {
+    const text = await listen({
+      wsPath: "/test/stt/live",
+      onPartial: t => { transcript.innerHTML = ""; const sp = document.createElement("span"); sp.className = "partial"; sp.textContent = t; transcript.appendChild(sp); },
+      onStatus: t => { sttStatus.textContent = t; },
+      meterEl: meterFill,
+    });
+    transcript.textContent = text ?? "";
+    sttStatus.textContent = "Done.";
+  } catch (err) { sttStatus.textContent = "Error: " + err.message; }
+  listenBtn.textContent = "Start listening";
+  listenBtn.classList.remove("active");
+});
+
+sttFileBtn.addEventListener("click", async () => {
+  const file = sttFile.files[0];
+  if (!file) { sttFileStatus.textContent = "Pick a file first."; return; }
+  sttFileStatus.textContent = "Transcribing…";
+  const form = new FormData();
+  form.append("audio", file, file.name);
+  try {
+    const res = await fetch("/test/stt", { method: "POST", body: form });
+    const data = await res.json();
+    fileTranscript.textContent = data.text || "(nothing heard)";
+    sttFileStatus.textContent = "Done.";
+  } catch (err) { sttFileStatus.textContent = "Error: " + err.message; }
+});
+
+speakBtn.addEventListener("click", async () => {
+  speakBtn.disabled = true;
+  ttsStatus.textContent = "Synthesizing…";
+  const t0 = performance.now();
+  try {
+    await speak("/test/tts", ttsText.value);
+    ttsStatus.textContent = `Done in ${((performance.now() - t0) / 1000).toFixed(1)}s`;
+  } catch (err) { ttsStatus.textContent = "Error: " + err.message; }
+  speakBtn.disabled = false;
+});
+</script>
+</body>
+</html>

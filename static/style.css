@@ -1,0 +1,28 @@
+:root { color-scheme: light dark; }
+body {
+  font-family: -apple-system, system-ui, sans-serif;
+  max-width: 640px; margin: 0 auto; padding: 2rem 1rem;
+  display: flex; flex-direction: column; gap: 1.25rem;
+}
+h1 { font-size: 1.3rem; margin: 0; }
+nav { font-size: 0.9rem; opacity: 0.75; }
+.card { border: 1px solid color-mix(in srgb, currentColor 20%, transparent); border-radius: 12px; padding: 1rem; }
+.card h2 { font-size: 0.95rem; margin: 0 0 0.75rem; opacity: 0.7; text-transform: uppercase; letter-spacing: 0.05em; }
+button {
+  font-size: 1rem; padding: 0.7rem 1.4rem; border-radius: 10px; border: none;
+  background: #4f46e5; color: white; cursor: pointer;
+}
+button:disabled { opacity: 0.5; cursor: default; }
+button.active { background: #dc2626; }
+.status { font-size: 0.85rem; opacity: 0.65; min-height: 1.2em; }
+.row { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+.meter { width: 120px; height: 8px; border-radius: 4px; background: color-mix(in srgb, currentColor 15%, transparent); overflow: hidden; }
+.meter > div { height: 100%; width: 0%; background: #22c55e; transition: width 80ms linear; }
+#chatLog { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.9rem; max-height: 55vh; overflow-y: auto; }
+.msg { padding: 0.55rem 0.85rem; border-radius: 12px; max-width: 85%; line-height: 1.45; }
+.msg.assistant { background: color-mix(in srgb, #4f46e5 14%, transparent); align-self: flex-start; }
+.msg.user { background: color-mix(in srgb, currentColor 10%, transparent); align-self: flex-end; }
+.msg.partial { opacity: 0.55; font-style: italic; }
+#transcript { min-height: 2.5rem; padding: 0.5rem 0; font-size: 1.05rem; white-space: pre-wrap; }
+#transcript .partial { opacity: 0.55; font-style: italic; }
+textarea { width: 100%; box-sizing: border-box; font: inherit; padding: 0.6rem; border-radius: 8px; min-height: 4rem; }
