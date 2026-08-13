@@ -1,8 +1,15 @@
 .venv/
-finetune/
-raw/
 .claude/
-data/
 __pycache__/
 .env
 make_sample_docs.py
+
+# Fine-tuning: the pipeline source is tracked (Colab clones it); its outputs are not.
+finetune/raw/
+finetune/data/
+finetune/outputs/
+*.gguf
+
+# Runtime data is not tracked, but the reference tables facts.py needs are.
+data/*
+!data/reference/
