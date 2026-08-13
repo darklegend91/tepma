@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TePMA — Document or Resume</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  [hidden] { display:none !important; }
+  body { max-width:780px; }
+  .hero { padding:1.5rem; background:linear-gradient(145deg,
+          color-mix(in srgb,#4f46e5 15%,Canvas),
+          color-mix(in srgb,#0ea5e9 8%,Canvas)); }
+  .hero h2 { color:inherit; opacity:1; text-transform:none; letter-spacing:0;
+             font-size:1.35rem; margin-bottom:.45rem; }
+  .hero p { margin:.2rem 0 1.2rem; opacity:.72; line-height:1.5; }
+  .language-row { display:flex; align-items:center; gap:.65rem; margin-bottom:1rem; }
+  .language-row select { min-width:170px; }
+  .choices { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.85rem; }
+  .choice { text-align:left; border:1px solid color-mix(in srgb,currentColor 14%,transparent);
+            color:inherit; background:color-mix(in srgb,Canvas 88%,transparent);
+            padding:1.15rem; min-height:126px; transition:transform .15s,border-color .15s; }
+  .choice:hover { transform:translateY(-2px); border-color:#4f46e5; }
+  .choice strong { display:block; font-size:1.08rem; margin:.35rem 0; }
+  .choice span { display:block; font-size:.86rem; opacity:.7; line-height:1.4; }
+  .choice-icon { font-size:1.65rem; }
+  .workflow-head { display:flex; justify-content:space-between; align-items:center; gap:1rem; }
+  .workflow-head h2 { margin:0; }
+  .ghost { color:inherit; background:transparent;
+           border:1px solid color-mix(in srgb,currentColor 25%,transparent); }
+  .steps { display:flex; gap:.4rem; flex-wrap:wrap; margin:.9rem 0 .55rem; }
+  .step { font-size:.74rem; padding:.25rem .58rem; border-radius:999px;
+          border:1px solid color-mix(in srgb,currentColor 22%,transparent); opacity:.45; }
+  .step.active { opacity:1; color:#4f46e5; border-color:#4f46e5; }
+  .step.complete { opacity:1; color:#15803d; border-color:#22c55e; }
+  .step.skipped { opacity:1; color:#b45309; border-color:#f59e0b; }
+  .progress { height:10px; overflow:hidden; border-radius:999px;
+              background:color-mix(in srgb,currentColor 13%,transparent); }
+  .progress div { width:0; height:100%; border-radius:inherit;
+                  background:linear-gradient(90deg,#4f46e5,#0ea5e9,#22c55e);
+                  transition:width .3s ease; }
+  #progressLabel { margin-top:.35rem; font-size:.78rem; opacity:.68; }
+  #chatLog { min-height:150px; max-height:48vh; }
+  .composer { margin-top:1rem; display:grid; grid-template-columns:1fr auto; gap:.65rem; }
+  .composer textarea { min-height:52px; resize:vertical; }
+  .composer-actions { display:flex; gap:.5rem; align-items:stretch; }
+  #micBtn { padding:.65rem .85rem; }
+  #stopBtn { background:#dc2626; grid-column:1/-1; justify-self:start; }
+  .meter-wide { grid-column:1/-1; width:100%; height:7px; border-radius:99px;
+                overflow:hidden; background:color-mix(in srgb,currentColor 12%,transparent); }
+  .meter-wide div { width:0;height:100%;background:#22c55e; }
+  .result-actions { display:flex; flex-wrap:wrap; gap:.6rem; margin-top:.8rem; }
+  .success-box { padding:.85rem; border-radius:10px;
+                 background:color-mix(in srgb,#22c55e 11%,transparent); line-height:1.5; }
+  .warning-box { padding:.85rem; border-radius:10px;
+                 background:color-mix(in srgb,#f59e0b 12%,transparent); line-height:1.5; }
+  @media (max-width:580px) {
+    .choices { grid-template-columns:1fr; }
+    .composer { grid-template-columns:1fr; }
+    .composer-actions { grid-column:1; }
+  }
+</style>
+</head>
+<body>
+  <h1>TePMA Assistant</h1>
+  <nav><a href="/">Resume interview</a> &nbsp;|&nbsp; <a href="/docs-assistant">Document library</a> &nbsp;|&nbsp; <a href="/test">Voice test</a></nav>
+
+  <section class="card hero" id="choiceCard">
+    <h2>What would you like to create?</h2>
+    <p>I can find or generate a document, or interview you section-by-section for a complete résumé.</p>
+    <label class="language-row" for="languageSelect">
+      Conversation language
+      <select id="languageSelect">
+        <option value="en">English</option>
+        <option value="hi">हिन्दी (Hindi)</option>
+        <option value="pa">ਪੰਜਾਬੀ (Punjabi)</option>
+      </select>
+    </label>
+    <div class="choices">
+      <button class="choice" id="documentChoice" type="button">
+        <span class="choice-icon">📄</span>
+        <strong>I want a document</strong>
+        <span>Describe it. I’ll find the best stored PDF or collect details and generate an application.</span>
+      </button>
+      <button class="choice" id="resumeChoice" type="button">
+        <span class="choice-icon">🧑‍💼</span>
+        <strong>I want a résumé</strong>
+        <span>I’ll interview you about contact details, role, education, experience, projects, skills and achievements.</span>
+      </button>
+    </div>
+  </section>
+
+  <section class="card" id="workflowCard" hidden>
+    <div class="workflow-head">
+      <h2 id="workflowTitle">Assistant</h2>
+      <button class="ghost" id="restartBtn" type="button">Start over</button>
+    </div>
+    <div class="steps">
+      <span class="step active" id="stepChoose">Choose</span>
+      <span class="step" id="stepCollect">Collect details</span>
+      <span class="step" id="stepCreate">Find / create</span>
+      <span class="step" id="stepSave">Save PDF</span>
+      <span class="step" id="stepPrint">Print</span>
+    </div>
+    <div class="progress" role="progressbar" aria-label="Workflow progress"
+         aria-valuemin="0" aria-valuemax="100" aria-valuenow="5" id="progressTrack">
+      <div id="progressFill"></div>
+    </div>
+    <div id="progressLabel">Choice selected — 5%</div>
+
+    <div id="chatLog" aria-live="polite"></div>
+    <div class="composer" id="composer">
+      <textarea id="answerInput" placeholder="Type your answer here…"></textarea>
+      <div class="composer-actions">
+        <button class="ghost" id="micBtn" type="button" title="Answer by voice">🎙️</button>
+        <button id="sendBtn" type="button">Send</button>
+      </div>
+      <button id="stopBtn" type="button" hidden>Stop listening &amp; send answer</button>
+      <div class="meter-wide"><div id="meterFill"></div></div>
+    </div>
+    <div class="status" id="statusText">Ready for your answer.</div>
+  </section>
+
+  <section class="card" id="resultCard" hidden>
+    <h2>Result</h2>
+    <div id="resultSummary" class="success-box"></div>
+    <div class="result-actions">
+      <a id="pdfLink" target="_blank"><button type="button">Open PDF</button></a>
+      <a id="docxLink"><button class="ghost" type="button">Download Word</button></a>
+      <button class="ghost" id="printAgainBtn" type="button">Print again</button>
+    </div>
+  </section>
+
+<script src="/static/voice.js"></script>
+<script>
+const el = id => document.getElementById(id);
+const ui = Object.fromEntries([
+  "choiceCard","languageSelect","documentChoice","resumeChoice","workflowCard",
+  "workflowTitle","restartBtn","stepChoose","stepCollect","stepCreate","stepSave",
+  "stepPrint","progressTrack","progressFill","progressLabel","chatLog","composer",
+  "answerInput","micBtn","sendBtn","stopBtn","meterFill","statusText","resultCard",
+  "resultSummary","pdfLink","docxLink","printAgainBtn"
+].map(id => [id, el(id)]));
+
+const text = {
+  documentPrompt: {
+    en: "Tell me what document you need. I will search the library first, and if a suitable application is missing, I will collect the details to create it.",
+    hi: "बताइए आपको कौन-सा दस्तावेज़ चाहिए। मैं पहले लाइब्रेरी में खोजूँगा, और आवेदन न मिलने पर उसे बनाने के लिए ज़रूरी जानकारी पूछूँगा।",
+    pa: "ਦੱਸੋ ਤੁਹਾਨੂੰ ਕਿਹੜਾ ਦਸਤਾਵੇਜ਼ ਚਾਹੀਦਾ ਹੈ। ਮੈਂ ਪਹਿਲਾਂ ਲਾਇਬ੍ਰੇਰੀ ਵਿੱਚ ਲੱਭਾਂਗਾ ਅਤੇ ਅਰਜ਼ੀ ਨਾ ਮਿਲਣ ਤੇ ਉਸਨੂੰ ਬਣਾਉਣ ਲਈ ਲੋੜੀਂਦੀ ਜਾਣਕਾਰੀ ਪੁੱਛਾਂਗਾ।"
+  },
+  typeAnswer: {
+    en: "Type your answer here…", hi: "अपना उत्तर यहाँ लिखें…", pa: "ਆਪਣਾ ਜਵਾਬ ਇੱਥੇ ਲਿਖੋ…"
+  }
+};
+
+let state = {
+  mode: null,
+  stage: "choice",
+  language: "en",
+  sessionId: null,
+  result: null,
+  busy: false,
+};
+
+function setProgress(percent, label) {
+  const value = Math.max(0, Math.min(100, Math.round(percent)));
+  ui.progressFill.style.width = value + "%";
+  ui.progressTrack.setAttribute("aria-valuenow", value);
+  ui.progressLabel.textContent = `${label} — ${value}%`;
+}
+
+function setStep(name, status) {
+  const node = ui["step" + name];
+  node.classList.toggle("active", status === "active");
+  node.classList.toggle("complete", status === "complete");
+  node.classList.toggle("skipped", status === "skipped");
+}
+
+function addMessage(role, message, partial = false) {
+  const node = document.createElement("div");
+  node.className = `msg ${role}` + (partial ? " partial" : "");
+  node.textContent = message;
+  ui.chatLog.appendChild(node);
+  ui.chatLog.scrollTop = ui.chatLog.scrollHeight;
+  return node;
+}
+
+async function api(path, body) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body || {}),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.detail || `Server error ${response.status}`);
+  return data;
+}
+
+function setBusy(busy, label = "") {
+  state.busy = busy;
+  ui.answerInput.disabled = busy;
+  ui.sendBtn.disabled = busy;
+  ui.micBtn.disabled = busy;
+  if (label) ui.statusText.textContent = label;
+}
+
+async function speakReply(message) {
+  if (!message) return;
+  try { await speak("/assistant/api/speak", message, state.language); }
+  catch (_) { /* The visible text remains usable when a voice is unavailable. */ }
+}
+
+function startMode(mode) {
+  state = {...state, mode, stage: mode === "document" ? "description" : "resume",
+           language: ui.languageSelect.value, sessionId:null, result:null};
+  ui.choiceCard.hidden = true;
+  ui.workflowCard.hidden = false;
+  ui.resultCard.hidden = true;
+  ui.chatLog.innerHTML = "";
+  ui.answerInput.placeholder = text.typeAnswer[state.language];
+  setStep("Choose", "complete");
+  setStep("Collect", "active");
+  setProgress(10, mode === "document" ? "Describe the document" : "Starting résumé interview");
+  if (mode === "document") {
+    ui.workflowTitle.textContent = "Document assistant";
+    const prompt = text.documentPrompt[state.language];
+    addMessage("assistant", prompt);
+    ui.answerInput.focus();
+    speakReply(prompt);
+  } else {
+    ui.workflowTitle.textContent = "Résumé interview";
+    startResume();
+  }
+}
+
+async function startResume() {
+  setBusy(true, "Starting interview…");
+  try {
+    const data = await api("/auto/start", {language: state.language});
+    state.sessionId = data.session_id;
+    addMessage("assistant", data.reply);
+    setProgress(12, "Résumé interview: 0 of 9 sections");
+    ui.statusText.textContent = "Answer by typing or using the microphone.";
+    speakReply(data.reply);
+  } catch (error) {
+    showError(error);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function submitAnswer() {
+  if (state.busy) return;
+  const answer = ui.answerInput.value.trim();
+  if (!answer) {
+    ui.statusText.textContent = "Please give an answer first.";
+    return;
+  }
+  ui.answerInput.value = "";
+  addMessage("user", answer);
+  setBusy(true, state.mode === "document" ? "Checking documents…" : "Preparing the next question…");
+  try {
+    if (state.mode === "document") await submitDocument(answer);
+    else await submitResume(answer);
+  } catch (error) {
+    showError(error);
+  } finally {
+    if (state.stage !== "complete") setBusy(false);
+  }
+}
+
+async function submitDocument(answer) {
+  let data;
+  if (state.stage === "description") {
+    setStep("Create", "active");
+    setProgress(25, "Searching document library");
+    data = await api("/assistant/api/document/start", {
+      query: answer, language: state.language,
+    });
+    state.sessionId = data.session_id;
+  } else {
+    data = await api("/assistant/api/document/turn", {
+      session_id: state.sessionId, answer,
+    });
+  }
+
+  if (data.status === "matched") {
+    addMessage("assistant", data.reply);
+    setStep("Collect", "complete");
+    setStep("Create", "complete");
+    setStep("Save", "complete");
+    presentResult({...data, generated:false, title:data.document.title});
+    speakReply(data.reply);
+    return;
+  }
+  if (data.status === "unsupported") {
+    addMessage("assistant", data.reply);
+    setStep("Create", "skipped");
+    setProgress(100, "Request cannot be generated safely");
+    state.stage = "complete";
+    ui.composer.hidden = true;
+    ui.statusText.textContent = "Try another document request or start over.";
+    speakReply(data.reply);
+    return;
+  }
+  if (data.status === "completed") {
+    if (data.reply) addMessage("assistant", data.reply);
+    setStep("Collect", "complete");
+    setStep("Create", "complete");
+    setStep("Save", "complete");
+    presentResult(data.result);
+    speakReply(data.reply || "Your document is ready.");
+    return;
+  }
+
+  state.stage = "document_fields";
+  addMessage("assistant", data.reply);
+  const ratio = data.total ? data.collected / data.total : 0;
+  setStep("Create", "");
+  setProgress(30 + ratio * 40, `Application details: ${data.collected} of ${data.total}`);
+  ui.statusText.textContent = "Answer the next detail, or type “skip” if it does not apply.";
+  speakReply(data.reply);
+}
+
+async function submitResume(answer) {
+  const data = await api("/auto/turn", {session_id:state.sessionId, answer});
+  addMessage("assistant", data.reply);
+  const count = (data.covered || []).length;
+  setProgress(12 + (count / 9) * 50, `Résumé interview: ${count} of 9 sections`);
+  if (!data.done) {
+    ui.statusText.textContent = "Answer the next question.";
+    speakReply(data.reply);
+    return;
+  }
+  await speakReply(data.reply);
+  await finishResume();
+}
+
+async function finishResume() {
+  state.stage = "finishing";
+  ui.composer.hidden = true;
+  setStep("Collect", "complete");
+  setStep("Create", "active");
+  setProgress(68, "Building résumé profile");
+  ui.statusText.textContent = "Building your résumé profile…";
+  const profile = await api("/auto/profile", {session_id:state.sessionId});
+  setStep("Create", "complete");
+  setStep("Save", "active");
+  setProgress(80, "Creating PDF and Word files");
+  const files = await api("/auto/build-resume", {session_id:state.sessionId});
+  setStep("Save", "complete");
+  setStep("Print", "active");
+  setProgress(92, "Checking printer");
+  const printing = await api("/auto/print", {session_id:state.sessionId});
+  presentResult({...profile, ...files, ...printing, title:"Your résumé", generated:true});
+}
+
+function downloadWhenNotPrinted(result) {
+  if (result.printed || !result.pdf_url) return;
+  const link = document.createElement("a");
+  link.href = result.pdf_url;
+  link.download = "TePMA-document.pdf";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function presentResult(result) {
+  state.stage = "complete";
+  state.result = result;
+  ui.composer.hidden = true;
+  ui.resultCard.hidden = false;
+  ui.pdfLink.href = result.pdf_url;
+  ui.docxLink.hidden = !result.docx_url;
+  if (result.docx_url) ui.docxLink.href = result.docx_url;
+  setStep("Print", result.printed ? "complete" : "skipped");
+  setProgress(100, result.printed ? "Saved and printed" : "Saved; printing skipped");
+  if (result.printed) {
+    ui.resultSummary.className = "success-box";
+    ui.resultSummary.textContent = `${result.title || "Document"} was saved and sent to ${result.printer_name}.`;
+  } else if (result.print_status === "not_connected") {
+    ui.resultSummary.className = "warning-box";
+    ui.resultSummary.textContent = `${result.title || "Document"} was saved. Printer not connected, so the PDF was not printed.`;
+  } else {
+    ui.resultSummary.className = "warning-box";
+    ui.resultSummary.textContent = `${result.title || "Document"} was saved, but printing failed: ${result.print_error || "unknown printer error"}`;
+  }
+  ui.statusText.textContent = "Finished.";
+  refreshPrinterStatus();
+  downloadWhenNotPrinted(result);
+  setBusy(false);
+}
+
+function showError(error) {
+  ui.statusText.textContent = "Error: " + error.message;
+  addMessage("assistant", "I could not continue: " + error.message);
+  setBusy(false);
+}
+
+async function listenForAnswer() {
+  if (state.busy || activeSession()) return;
+  ui.micBtn.classList.add("active");
+  ui.stopBtn.hidden = false;
+  ui.answerInput.value = "";
+  ui.statusText.textContent = "Listening… pause for 3 seconds or press Stop listening.";
+  try {
+    const answer = await listen({
+      wsPath:"/assistant/api/listen",
+      language:state.language,
+      meterEl:ui.meterFill,
+      onPartial:value => { ui.answerInput.value = value || ""; },
+      onStatus:value => { ui.statusText.textContent = value; },
+    });
+    if (answer) {
+      ui.answerInput.value = answer;
+      await submitAnswer();
+    } else {
+      ui.statusText.textContent = "No speech detected. You can try again or type your answer.";
+    }
+  } catch (error) {
+    showError(error);
+  } finally {
+    ui.micBtn.classList.remove("active");
+    ui.stopBtn.hidden = true;
+  }
+}
+
+async function printAgain() {
+  if (!state.result || !state.sessionId) return;
+  ui.printAgainBtn.disabled = true;
+  ui.resultSummary.textContent = "Checking printer…";
+  try {
+    const path = state.mode === "resume" ? "/auto/print" : "/assistant/api/document/print";
+    const result = await api(path, {session_id:state.sessionId});
+    presentResult({...state.result, ...result});
+  } catch (error) {
+    ui.resultSummary.className = "warning-box";
+    ui.resultSummary.textContent = "Could not print: " + error.message;
+  } finally {
+    ui.printAgainBtn.disabled = false;
+  }
+}
+
+function restart() {
+  activeSession()?.abort();
+  window.speechSynthesis?.cancel();
+  state = {mode:null,stage:"choice",language:ui.languageSelect.value,
+           sessionId:null,result:null,busy:false};
+  ui.choiceCard.hidden = false;
+  ui.workflowCard.hidden = true;
+  ui.resultCard.hidden = true;
+  ui.composer.hidden = false;
+  ui.answerInput.value = "";
+  ["Choose","Collect","Create","Save","Print"].forEach(name => setStep(name, ""));
+}
+
+ui.documentChoice.addEventListener("click", () => startMode("document"));
+ui.resumeChoice.addEventListener("click", () => startMode("resume"));
+ui.sendBtn.addEventListener("click", submitAnswer);
+ui.micBtn.addEventListener("click", listenForAnswer);
+ui.stopBtn.addEventListener("click", () => {
+  const active = activeSession();
+  if (!active) return;
+  ui.stopBtn.disabled = true;
+  ui.stopBtn.textContent = "Sending answer…";
+  active.finish();
+  setTimeout(() => {
+    ui.stopBtn.disabled = false;
+    ui.stopBtn.textContent = "Stop listening & send answer";
+  }, 1000);
+});
+ui.answerInput.addEventListener("keydown", event => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    submitAnswer();
+  }
+});
+ui.restartBtn.addEventListener("click", restart);
+ui.printAgainBtn.addEventListener("click", printAgain);
+</script>
+</body>
+</html>

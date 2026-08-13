@@ -1,4 +1,32 @@
 // Shared voice engine: streaming mic capture + silence detection + TTS playback.
+
+// Every page loads this file, so keep one printer indicator at the bottom of the app.
+const printerStatusBar = document.createElement("div");
+printerStatusBar.className = "printer-status";
+printerStatusBar.setAttribute("role", "status");
+printerStatusBar.setAttribute("aria-live", "polite");
+printerStatusBar.innerHTML = '<span class="printer-dot"></span><span>Checking printer…</span>';
+document.body.appendChild(printerStatusBar);
+
+async function refreshPrinterStatus() {
+  const label = printerStatusBar.lastElementChild;
+  try {
+    const response = await fetch("/system/printer", { cache: "no-store" });
+    if (!response.ok) throw new Error("status unavailable");
+    const printer = await response.json();
+    printerStatusBar.classList.toggle("connected", printer.connected);
+    label.textContent = printer.connected
+      ? `Printer: ${printer.name}`
+      : "Printer: Not connected";
+  } catch (_) {
+    printerStatusBar.classList.remove("connected");
+    label.textContent = "Printer: Not connected";
+  }
+}
+
+refreshPrinterStatus();
+setInterval(refreshPrinterStatus, 15000);
+window.addEventListener("focus", refreshPrinterStatus);
 const SILENCE_MS = 3000;
 const SILENCE_RMS = 0.012;
 const TARGET_RATE = 16000;
@@ -24,9 +52,11 @@ function toInt16(f32) {
 
 // Listen via the given WebSocket path until silence (or manual finish/abort).
 // Resolves with the final transcript, or null if aborted.
-function listen({ wsPath, onPartial, onStatus, meterEl }) {
+function listen({ wsPath, onPartial, onStatus, meterEl, language = "en" }) {
   return new Promise(async (resolve, reject) => {
-    const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${wsPath}`);
+    const separator = wsPath.includes("?") ? "&" : "?";
+    const socketPath = `${wsPath}${separator}language=${encodeURIComponent(language)}`;
+    const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${socketPath}`);
     ws.binaryType = "arraybuffer";
     const s = { ws, stopped: false };
     session = s;
@@ -99,7 +129,22 @@ function listen({ wsPath, onPartial, onStatus, meterEl }) {
 function activeSession() { return session; }
 
 // POST text to a TTS endpoint and play the returned WAV.
-async function speak(ttsPath, text) {
+async function speak(ttsPath, text, language = "en") {
+  if (language !== "en" && "speechSynthesis" in window) {
+    const locale = language === "hi" ? "hi-IN" : "pa-IN";
+    return new Promise((resolve, reject) => {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = locale;
+      const voices = window.speechSynthesis.getVoices();
+      const exactVoice = voices.find(voice => voice.lang.toLowerCase() === locale.toLowerCase());
+      const relatedVoice = voices.find(voice => voice.lang.toLowerCase().startsWith(language));
+      if (exactVoice || relatedVoice) utterance.voice = exactVoice || relatedVoice;
+      utterance.onend = resolve;
+      utterance.onerror = event => reject(new Error(event.error || "Speech playback failed"));
+      window.speechSynthesis.speak(utterance);
+    });
+  }
   const res = await fetch(ttsPath, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

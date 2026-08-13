@@ -52,11 +52,11 @@ def get_tts():
     return _tts
 
 
-def transcribe_audio(audio, fast: bool = False) -> str:
+def transcribe_audio(audio, fast: bool = False, language: str = "en") -> str:
     """Transcribe a file path or float32 numpy array. fast=True uses greedy decoding."""
     segments, _ = get_whisper().transcribe(
         audio,
-        language="en",
+        language=language,
         beam_size=1 if fast else 5,
         condition_on_previous_text=False,
     )

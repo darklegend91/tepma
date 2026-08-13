@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse
 
 from engines import llm_extract, synthesize_wav
 from facts import apply_facts, date_context
+from printer_status import default_printer_status
 from profile_schema import EXTRACTOR_PROMPT, PROFILE_SCHEMA
 from resume_docx import render_resume_docx
 from resume_pdf import render_resume
@@ -27,6 +28,7 @@ router = APIRouter(prefix="/auto", tags=["auto"])
 
 DATA_DIR = Path(__file__).parent / "data" / "sessions"
 MAX_TURNS = 22          # hard stop so a rambling interview always terminates
+LANGUAGES = {"en": "English", "hi": "Hindi", "pa": "Punjabi"}
 
 # Everything a resume needs. The server tracks which of these the candidate has answered
 # so the model cannot get stuck re-asking a question that was already answered - a real
@@ -94,6 +96,20 @@ def _coverage_note(covered: set) -> str:
             f"\nAsk about the FIRST item in that list.")
 
 
+def _language_note(language: str) -> str:
+    name = LANGUAGES[language]
+    script_note = {
+        "en": "Use natural English.",
+        "hi": "Write Hindi in Devanagari script.",
+        "pa": "Use Indian Punjabi and write it only in Gurmukhi script, not Shahmukhi.",
+    }[language]
+    return (
+        f"\n\nThe candidate selected {name} for this interview. Conduct the entire spoken "
+        f"interview in {name}, including the greeting and every question. Keep names, email "
+        f"addresses, phone numbers, and technical terms in their natural form. {script_note}"
+    )
+
+
 def _is_substantive(answer: str) -> bool:
     """Did the candidate actually answer, or deflect? Used to guarantee forward progress."""
     a = answer.strip().lower()
@@ -119,23 +135,29 @@ def _save(s: dict):
 
 
 @router.post("/start")
-async def auto_start():
+async def auto_start(payload: dict):
     """Begin an interview: create a session and return the spoken greeting."""
+    language = payload.get("language", "en")
+    if language not in LANGUAGES:
+        language = "en"
     session_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
     session_dir = DATA_DIR / session_id
     session_dir.mkdir(parents=True, exist_ok=True)
     messages = [{"role": "user", "content":
                  "(The candidate has joined the voice call. Greet them and begin the interview.)"}]
     result = await llm_extract(
-        messages, AUTO_PROMPT + date_context() + _coverage_note(set()), TURN_SCHEMA
+        messages,
+        AUTO_PROMPT + date_context() + _language_note(language) + _coverage_note(set()),
+        TURN_SCHEMA,
     )
     reply = result["reply"].strip()
     messages.append({"role": "assistant", "content": reply})
     s = {"messages": messages, "turns": 0, "dir": session_dir,
-         "covered": set(), "asked": next(iter(TOPICS))}
+         "covered": set(), "asked": next(iter(TOPICS)), "language": language}
     _sessions[session_id] = s
     _save(s)
-    return {"session_id": session_id, "reply": reply, "done": False}
+    return {"session_id": session_id, "reply": reply, "done": False,
+            "language": language}
 
 
 @router.post("/turn")
@@ -159,7 +181,8 @@ async def auto_turn(payload: dict):
 
     result = await llm_extract(
         s["messages"],
-        AUTO_PROMPT + date_context() + _coverage_note(s["covered"]),
+        AUTO_PROMPT + date_context() + _language_note(s.get("language", "en"))
+        + _coverage_note(s["covered"]),
         TURN_SCHEMA,
     )
     # coverage only ever grows: a later turn must not "un-answer" an earlier topic
@@ -183,10 +206,7 @@ async def auto_turn(payload: dict):
     }
 
 
-@router.post("/finish")
-async def auto_finish(payload: dict):
-    """Extract the profile, render PDF + Word, and send the PDF to the printer."""
-    s = _session(payload.get("session_id", ""))
+async def _build_profile(s: dict) -> dict:
     real = [m for m in s["messages"] if not m["content"].startswith("(")]
     if len(real) < 2:
         raise HTTPException(400, "Interview too short to build a resume")
@@ -204,37 +224,99 @@ async def auto_finish(payload: dict):
     except Exception as e:
         raise HTTPException(500, f"Could not build the profile: {e}")
     profile = apply_facts(profile)
-
     session_dir = s["dir"]
     (session_dir / "profile.json").write_text(json.dumps(profile, indent=2, ensure_ascii=False))
+    return profile
+
+
+def _build_documents(s: dict, profile: dict) -> dict:
+    session_dir = s["dir"]
     try:
         (session_dir / "resume.pdf").write_bytes(render_resume(profile))
         (session_dir / "resume.docx").write_bytes(render_resume_docx(profile))
     except Exception as e:
         raise HTTPException(500, f"Could not generate the resume document: {e}")
-
-    # Printing is best-effort: the resume is already saved, so a printer fault must not
-    # discard the interview. The UI shows this as a warning, not a failure.
-    printed, print_error = False, None
-    try:
-        subprocess.run(["lpr", str(session_dir / "resume.pdf")],
-                       check=True, capture_output=True, timeout=30)
-        printed = True
-    except FileNotFoundError:
-        print_error = "No printing system found (lpr is not available on this machine)."
-    except subprocess.TimeoutExpired:
-        print_error = "The printer did not respond in time."
-    except subprocess.CalledProcessError as e:
-        print_error = e.stderr.decode().strip() or "No default printer is configured."
-
     return {
         "session_id": session_dir.name,
-        "profile": profile,
-        "corrections": profile.get("_corrections", []),
         "pdf_url": f"/auto/resume/{session_dir.name}.pdf",
         "docx_url": f"/auto/resume/{session_dir.name}.docx",
-        "printed": printed,
-        "print_error": print_error,
+        "saved": True,
+    }
+
+
+def _print_saved_pdf(s: dict) -> dict:
+    """Print only when CUPS reports a ready default printer."""
+    printer = default_printer_status()
+    if not printer["connected"]:
+        return {
+            "printed": False,
+            "print_status": "not_connected",
+            "printer_name": None,
+            "print_error": None,
+        }
+
+    pdf = s["dir"] / "resume.pdf"
+    if not pdf.exists():
+        raise HTTPException(404, "Resume PDF has not been generated")
+    try:
+        subprocess.run(["lpr", str(pdf)], check=True, capture_output=True, timeout=30)
+        return {
+            "printed": True,
+            "print_status": "printed",
+            "printer_name": printer["name"],
+            "print_error": None,
+        }
+    except FileNotFoundError:
+        error = "No printing system found (lpr is not available on this machine)."
+    except subprocess.TimeoutExpired:
+        error = "The printer did not respond in time."
+    except subprocess.CalledProcessError as e:
+        error = e.stderr.decode().strip() or "The printer could not accept the PDF."
+    return {
+        "printed": False,
+        "print_status": "failed",
+        "printer_name": printer["name"],
+        "print_error": error,
+    }
+
+
+@router.post("/profile")
+async def auto_profile(payload: dict):
+    """Extract and save a structured profile from the completed interview."""
+    s = _session(payload.get("session_id", ""))
+    profile = await _build_profile(s)
+    return {"profile": profile, "corrections": profile.get("_corrections", [])}
+
+
+@router.post("/build-resume")
+async def auto_build_resume(payload: dict):
+    """Generate and save PDF and Word files from the extracted profile."""
+    s = _session(payload.get("session_id", ""))
+    profile_file = s["dir"] / "profile.json"
+    if not profile_file.exists():
+        raise HTTPException(404, "Profile has not been generated")
+    return _build_documents(s, json.loads(profile_file.read_text()))
+
+
+@router.post("/print")
+async def auto_print(payload: dict):
+    """Print the saved PDF only when the default printer is ready."""
+    return _print_saved_pdf(_session(payload.get("session_id", "")))
+
+
+@router.post("/finish")
+async def auto_finish(payload: dict):
+    """Compatibility endpoint: build, save, and conditionally print the resume."""
+    s = _session(payload.get("session_id", ""))
+    profile = await _build_profile(s)
+    documents = _build_documents(s, profile)
+    printing = _print_saved_pdf(s)
+
+    return {
+        **documents,
+        **printing,
+        "profile": profile,
+        "corrections": profile.get("_corrections", []),
     }
 
 

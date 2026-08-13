@@ -6,3 +6,4 @@ kokoro
 soundfile 
 httpx 
 fpdf2
+python-docx

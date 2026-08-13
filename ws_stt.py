@@ -11,19 +11,26 @@ async def live_transcribe_socket(ws: WebSocket):
     """Client streams PCM binary frames; server pushes {"partial": text} while audio
     accumulates and {"final": text} after a "stop" text frame."""
     await ws.accept()
+    language = ws.query_params.get("language", "en")
+    if language not in {"en", "hi", "pa"}:
+        language = "en"
     buffer = np.zeros(0, dtype=np.float32)
     last_len = 0
     busy = False
 
     async def transcribe_and_send(final: bool):
         nonlocal busy, last_len
-        if busy or len(buffer) < 8000:  # need at least 0.5s of audio
+        if busy:
+            return
+        if len(buffer) < 8000:  # need at least 0.5s of audio to run Whisper
+            if final:
+                await ws.send_json({"final": ""})
             return
         busy = True
         last_len = len(buffer)
         try:
             text = await asyncio.get_event_loop().run_in_executor(
-                None, transcribe_audio, buffer, not final
+                None, transcribe_audio, buffer, not final, language
             )
             await ws.send_json({"final" if final else "partial": text})
         finally:

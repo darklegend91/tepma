@@ -1,7 +1,7 @@
 :root { color-scheme: light dark; }
 body {
   font-family: -apple-system, system-ui, sans-serif;
-  max-width: 640px; margin: 0 auto; padding: 2rem 1rem;
+  max-width: 640px; margin: 0 auto; padding: 2rem 1rem 4.5rem;
   display: flex; flex-direction: column; gap: 1.25rem;
 }
 h1 { font-size: 1.3rem; margin: 0; }
@@ -26,3 +26,15 @@ button.active { background: #dc2626; }
 #transcript { min-height: 2.5rem; padding: 0.5rem 0; font-size: 1.05rem; white-space: pre-wrap; }
 #transcript .partial { opacity: 0.55; font-style: italic; }
 textarea { width: 100%; box-sizing: border-box; font: inherit; padding: 0.6rem; border-radius: 8px; min-height: 4rem; }
+.printer-status {
+  position: fixed; left: 50%; bottom: 0.75rem; z-index: 100;
+  transform: translateX(-50%); box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center; gap: 0.5rem;
+  width: min(calc(100% - 2rem), 640px); padding: 0.65rem 1rem;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 999px; background: color-mix(in srgb, Canvas 92%, transparent);
+  box-shadow: 0 6px 24px color-mix(in srgb, #000 16%, transparent);
+  backdrop-filter: blur(12px); font-size: 0.85rem;
+}
+.printer-dot { width: 0.6rem; height: 0.6rem; border-radius: 50%; background: #ef4444; }
+.printer-status.connected .printer-dot { background: #22c55e; }

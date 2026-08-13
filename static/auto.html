@@ -12,6 +12,12 @@
     box-shadow:0 6px 20px rgba(79,70,229,.35);
   }
   #bigBtn.active { background:#dc2626; box-shadow:0 6px 20px rgba(220,38,38,.35); }
+  #stopListeningBtn { margin-top:.85rem; background:#dc2626; }
+  .language-picker { display:flex; align-items:center; justify-content:center; gap:.6rem;
+                     margin-bottom:1rem; font-size:.9rem; }
+  .language-picker select { font:inherit; padding:.55rem .8rem; border-radius:9px;
+                            border:1px solid color-mix(in srgb,currentColor 25%,transparent);
+                            background:Canvas; color:CanvasText; }
   #phase { font-size:1.05rem; margin-top:1rem; min-height:1.5em; }
   #sub { font-size:.9rem; opacity:.6; min-height:1.2em; }
   .bigmeter { width:min(320px,80%); height:10px; border-radius:5px; margin:1rem auto 0;
@@ -22,6 +28,13 @@
           border:1px solid color-mix(in srgb, currentColor 30%, transparent); }
   .step.on { opacity:1; border-color:#4f46e5; background:color-mix(in srgb,#4f46e5 18%,transparent); }
   .step.done { opacity:.85; border-color:#22c55e; }
+  .step.skipped { opacity:.85; border-color:#f59e0b; }
+  .progress-track { height:12px; margin:1rem auto .35rem; overflow:hidden; border-radius:999px;
+                    background:color-mix(in srgb,currentColor 15%,transparent); }
+  .progress-fill { width:0; height:100%; border-radius:inherit;
+                   background:linear-gradient(90deg,#4f46e5,#22c55e);
+                   transition:width .35s ease; }
+  #progressLabel { font-size:.82rem; opacity:.7; }
   dialog {
     border:none; border-radius:14px; padding:1.4rem; max-width:min(440px,90vw);
     background:Canvas; color:CanvasText;
@@ -36,19 +49,32 @@
 </head>
 <body>
   <h1>🎙️ TePMA — Automated Interview</h1>
-  <nav><a href="/">Manual interview</a> &nbsp;|&nbsp; <a href="/docs-assistant">Documents</a></nav>
+  <nav><a href="/assistant">✨ Unified assistant</a> &nbsp;|&nbsp; <a href="/">Manual interview</a> &nbsp;|&nbsp; <a href="/docs-assistant">Documents</a></nav>
 
   <div class="card stage">
+    <label class="language-picker" for="languageSelect">
+      Interview language
+      <select id="languageSelect">
+        <option value="en">English</option>
+        <option value="hi">हिन्दी (Hindi)</option>
+        <option value="pa">ਪੰਜਾਬੀ (Punjabi)</option>
+      </select>
+    </label>
     <button id="bigBtn">Start interview</button>
     <div id="phase">Click start. The interview runs on its own and prints your resume at the end.</div>
     <div id="sub"></div>
     <div class="bigmeter"><div id="meterFill"></div></div>
+    <button id="stopListeningBtn" type="button" hidden>Stop listening &amp; send answer</button>
     <div class="steps">
       <span class="step" id="s-interview">Interview</span>
       <span class="step" id="s-profile">Build profile</span>
-      <span class="step" id="s-pdf">Make resume</span>
+      <span class="step" id="s-pdf">Save PDF</span>
       <span class="step" id="s-print">Print</span>
     </div>
+    <div id="progressTrack" class="progress-track" role="progressbar"
+         aria-label="Automated interview progress" aria-valuemin="0" aria-valuemax="100"
+         aria-valuenow="0"><div id="progressFill" class="progress-fill"></div></div>
+    <div id="progressLabel">Ready — 0%</div>
   </div>
 
   <div class="card">
@@ -96,8 +122,22 @@ function setStep(name, state) {
   const el = document.getElementById("s-" + name);
   el.classList.toggle("on", state === "on");
   el.classList.toggle("done", state === "done");
+  el.classList.toggle("skipped", state === "skipped");
 }
 function resetSteps() { steps.forEach(s => { setStep(s, ""); }); }
+function setProgress(percent, label) {
+  const value = Math.max(0, Math.min(100, Math.round(percent)));
+  progressFill.style.width = value + "%";
+  progressTrack.setAttribute("aria-valuenow", value);
+  progressLabel.textContent = `${label} — ${value}%`;
+}
+function setListeningButton(active, sending = false) {
+  stopListeningBtn.hidden = !active;
+  stopListeningBtn.disabled = sending;
+  stopListeningBtn.textContent = sending
+    ? "Sending answer…"
+    : "Stop listening & send answer";
+}
 function say(phase, sub = "") { document.getElementById("phase").textContent = phase; document.getElementById("sub").textContent = sub; }
 function addMsg(role, text, partial = false) {
   const d = document.createElement("div");
@@ -119,46 +159,94 @@ async function api(path, body) {
   return data;
 }
 
+function downloadPdf(url) {
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "TePMA-resume.pdf";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function presentResult(result) {
+  lastResult = result;
+  pdfLink.href = result.pdf_url;
+  docxLink.href = result.docx_url;
+  resultCard.style.display = "";
+  corrections.textContent = (result.corrections || []).length
+    ? "Auto-corrected: " + result.corrections.map(c => `${c.from} → ${c.to}`).join("; ")
+    : "";
+  setStep("print", result.printed ? "done" : "skipped");
+  setProgress(100, result.printed ? "Resume saved and printed" : "Resume saved; printing skipped");
+  refreshPrinterStatus();
+
+  if (result.printed) {
+    say(`Done — PDF saved and sent to ${result.printer_name}.`, "");
+    return;
+  }
+
+  downloadPdf(result.pdf_url);
+  if (result.print_status === "not_connected") {
+    say("Done — PDF saved.", "Printer not connected, so printing was skipped. The PDF download has started.");
+  } else {
+    say("PDF saved, but printing failed.", "The PDF download has started.");
+    popup("Printer problem", (result.print_error || "The printer could not accept the PDF.") +
+          "\n\nYour resume was still saved and downloaded.", () => reprint());
+  }
+}
+
 // ---------- the automated loop ----------
 async function runAuto() {
+  const selectedLanguage = languageSelect.value;
   running = true;
   sessionId = null;
   lastResult = null;
   chatLog.innerHTML = "";
   resultCard.style.display = "none";
   resetSteps();
+  setProgress(0, "Ready");
   bigBtn.textContent = "Stop";
   bigBtn.classList.add("active");
+  languageSelect.disabled = true;
   setStep("interview", "on");
 
   try {
     say("Starting…");
-    const start = await api("/auto/start");
+    setProgress(5, "Starting interview");
+    const start = await api("/auto/start", { language: selectedLanguage });
     sessionId = start.session_id;
+    setProgress(10, "Interview started");
 
     let reply = start.reply, done = false;
     while (running) {
       addMsg("assistant", reply);
       say("Interviewer speaking…");
-      try { await speak("/auto/speak", reply); }
+      try { await speak("/auto/speak", reply, selectedLanguage); }
       catch { /* keep going silently: text is on screen */ }
       if (!running) break;
       if (done) break;
 
       // listen for the answer
       const partial = addMsg("user", "…", true);
-      say("Listening…", "Speak now. A 3-second pause ends your answer.");
+      say("Listening…", "Pause for 3 seconds or press Stop listening & send answer.");
       let answer;
       try {
         answer = await listen({
           wsPath: "/auto/listen",
           onPartial: t => { partial.textContent = t || "…"; chatLog.scrollTop = chatLog.scrollHeight; },
-          onStatus: t => document.getElementById("sub").textContent = t,
+          onStatus: t => {
+            document.getElementById("sub").textContent = t;
+            if (t.startsWith("Listening") || t.startsWith("Silence")) setListeningButton(true);
+            if (t.startsWith("Finalizing")) setListeningButton(true, true);
+          },
           meterEl: meterFill,
+          language: selectedLanguage,
         });
       } catch (err) {
         partial.remove();
         throw new Error("Microphone or connection problem: " + err.message);
+      } finally {
+        setListeningButton(false);
       }
       partial.remove();
       if (!running) break;
@@ -174,6 +262,8 @@ async function runAuto() {
       const turn = await api("/auto/turn", { session_id: sessionId, answer });
       reply = turn.reply;
       done = turn.done;
+      const covered = (turn.covered || []).length;
+      setProgress(10 + (covered / 9) * 35, `Interview: ${covered} of 9 topics`);
     }
 
     if (!running) { say("Stopped."); return; }
@@ -181,28 +271,20 @@ async function runAuto() {
     // ----- automatic finish -----
     setStep("interview", "done");
     setStep("profile", "on");
+    setProgress(50, "Building profile");
     say("Building your profile…", "Reading the whole conversation. This takes a few seconds.");
-    const result = await api("/auto/finish", { session_id: sessionId });
-    lastResult = result;
+    const profile = await api("/auto/profile", { session_id: sessionId });
     setStep("profile", "done");
+    setStep("pdf", "on");
+    setProgress(70, "Creating and saving PDF");
+    say("Saving your resume…", "Creating PDF and Word files.");
+    const documents = await api("/auto/build-resume", { session_id: sessionId });
     setStep("pdf", "done");
-    setStep("print", result.printed ? "done" : "on");
-
-    pdfLink.href = result.pdf_url;
-    docxLink.href = result.docx_url;
-    resultCard.style.display = "";
-    corrections.textContent = (result.corrections || []).length
-      ? "Auto-corrected: " + result.corrections.map(c => `${c.from} → ${c.to}`).join("; ")
-      : "";
-
-    if (result.printed) {
-      say("Done — your resume is printing.", "");
-    } else {
-      say("Resume ready, but printing failed.", "It is saved — you can open or download it below.");
-      popup("Printer problem", result.print_error +
-            "\n\nYour resume was still generated and saved.",
-            () => reprint());
-    }
+    setStep("print", "on");
+    setProgress(90, "Checking printer");
+    say("PDF saved.", "Checking whether a printer is connected…");
+    const printing = await api("/auto/print", { session_id: sessionId });
+    presentResult({ ...profile, ...documents, ...printing });
   } catch (err) {
     say("Interview stopped.", "");
     popup("Something went wrong", err.message, sessionId ? () => finishOnly() : null);
@@ -210,6 +292,7 @@ async function runAuto() {
     running = false;
     bigBtn.textContent = "Start interview";
     bigBtn.classList.remove("active");
+    languageSelect.disabled = false;
   }
 }
 
@@ -217,22 +300,29 @@ async function runAuto() {
 async function finishOnly() {
   try {
     say("Retrying…");
+    setProgress(50, "Rebuilding resume");
     const result = await api("/auto/finish", { session_id: sessionId });
-    lastResult = result;
-    pdfLink.href = result.pdf_url;
-    docxLink.href = result.docx_url;
-    resultCard.style.display = "";
-    say(result.printed ? "Done — your resume is printing." : "Resume ready (printing failed).");
-    if (!result.printed) popup("Printer problem", result.print_error, () => reprint());
+    setStep("interview", "done");
+    setStep("profile", "done");
+    setStep("pdf", "done");
+    presentResult(result);
   } catch (err) { popup("Still failing", err.message, null); }
 }
 
 async function reprint() {
   if (!lastResult) return;
   try {
-    const r = await api("/auto/finish", { session_id: lastResult.session_id });
-    if (r.printed) say("Sent to the printer.");
-    else popup("Printer problem", r.print_error, null);
+    setStep("print", "on");
+    setProgress(90, "Checking printer");
+    const r = await api("/auto/print", { session_id: lastResult.session_id });
+    lastResult = { ...lastResult, ...r };
+    if (r.printed) presentResult(lastResult);
+    else if (r.print_status === "not_connected") {
+      setStep("print", "skipped");
+      setProgress(100, "Resume saved; printer not connected");
+      say("PDF remains saved.", "Printer: Not connected.");
+      refreshPrinterStatus();
+    } else popup("Printer problem", r.print_error, null);
   } catch (err) { popup("Could not print", err.message, null); }
 }
 
@@ -244,6 +334,12 @@ bigBtn.addEventListener("click", () => {
   } else {
     runAuto();
   }
+});
+stopListeningBtn.addEventListener("click", () => {
+  const listening = activeSession();
+  if (!listening) return;
+  setListeningButton(true, true);
+  listening.finish();
 });
 reprintBtn.addEventListener("click", reprint);
 </script>

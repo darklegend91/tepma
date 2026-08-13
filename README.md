@@ -1,7 +1,8 @@
-# TePMA — Voice-Operated Resume Builder
+# TePMA — Voice Document and Resume Assistant
 
-A fully local, voice-operated platform: an LLM interviews you over voice, extracts a
-structured profile, and generates a resume PDF. Also includes a voice document assistant.
+A fully local, voice-operated platform. The new unified assistant first asks whether the
+user wants a document or a résumé. It can select a stored PDF, collect details to generate
+a missing application, or run a complete résumé interview and create PDF and Word files.
 
 Everything runs on your own machine — no cloud APIs:
 
@@ -23,7 +24,7 @@ ollama pull qwen3:8b
 # 2. Create the venv and install dependencies
 python3.11 -m venv .venv
 .venv/bin/pip install fastapi "uvicorn[standard]" python-multipart \
-    faster-whisper kokoro soundfile httpx fpdf2
+    faster-whisper kokoro soundfile httpx fpdf2 python-docx
 
 # 3. (Optional) regenerate the sample documents
 .venv/bin/python make_sample_docs.py
@@ -43,15 +44,47 @@ ollama serve
 .venv/bin/uvicorn server:app --host 127.0.0.1 --port 8000
 ```
 
-Then open <http://localhost:8000> in your browser (use a real browser and allow the
-microphone). The first interview reply is slow while models load; after that it's fast.
+Then open <http://localhost:8000/assistant> in your browser (use a real browser and allow
+the microphone). The first voice reply is slow while models load; after that it is faster.
 
 Pages:
 
+- `/assistant` — **new unified workflow**: choose document or résumé
 - `/auto` — **automated kiosk interview**: one click, hands-free, auto-prints at the end
 - `/` — the manual resume interview (talk, then click **Generate resume**)
 - `/docs-assistant` — ask for a stored document by voice
 - `/test` — isolated STT / TTS testing tools
+
+### The unified flow (`/assistant`)
+
+The first screen asks **I want a document** or **I want a résumé** and offers English,
+Hindi, and Punjabi conversation modes. Every answer can be typed or spoken. Voice capture
+is submitted after three seconds of silence or immediately with **Stop listening & send
+answer**.
+
+Document branch:
+
+```
+description -> search stored PDFs
+            -> match: save/open -> print only if printer is ready
+            -> no match: collect required application details -> PDF + Word
+            -> official record request: refuse instead of fabricating it
+```
+
+Generated applications are based only on details supplied by the user. Identity documents,
+marksheets, certificates, licences, prescriptions, and government/court-issued records are
+not generated. The final application is saved even when no printer is connected.
+
+Résumé branch:
+
+```
+name -> target role -> education -> experience -> projects -> skills
+     -> achievements -> contact -> location/PIN -> PDF + Word -> optional print
+```
+
+Both branches show progress at each stage. A red/green status bar at the bottom reports the
+current default printer. If it says **Printer: Not connected**, the PDF is saved and
+downloaded rather than treated as an interview failure.
 
 ### The automated flow (`/auto`)
 
@@ -71,23 +104,33 @@ Conversation state lives on the **server** and is written to disk every turn, so
 or crash never loses an interview. Errors surface as popups, and printer failures are
 non-fatal: the resume is always saved and downloadable even if printing fails.
 
-## Stop the project
+## Stop the project and test tunnel
+
+The normal way to stop everything is to press **Ctrl+C** once in each terminal where
+`uvicorn`, `ollama serve`, or `cloudflared tunnel` is running.
+
+If those terminals are no longer available, stop all three processes from a new terminal:
 
 ```bash
-# Stop the voice server: press Ctrl+C in its terminal, or:
+# Stop the public Cloudflare test link
+pkill -f "cloudflared tunnel"
+
+# Stop the TePMA web/voice server
 pkill -f "uvicorn server:app"
-```
 
-```bash
-# Stop Ollama: press Ctrl+C in its terminal, or:
+# Unload the LLM, then stop the Ollama server
+ollama stop qwen3:8b 2>/dev/null || true
 pkill -f "ollama serve"
 ```
 
-Check nothing is left running:
+Check that nothing is left running:
 
 ```bash
-pgrep -l -f "uvicorn|ollama" || echo "all stopped"
+pgrep -l -f "cloudflared tunnel|uvicorn server:app|ollama serve" || echo "all stopped"
 ```
+
+Once `cloudflared` stops, the temporary `trycloudflare.com` URL stops working. A new
+tunnel will create a new URL the next time it is started.
 
 If `ollama serve` ever says `address already in use`, it is already running — don't start
 it twice. To free ~5 GB RAM without stopping the server: `ollama stop qwen3:8b`.
@@ -103,6 +146,9 @@ WHISPER_MODEL= "small"
 TTS_VOICE    = "af_heart"
 TTS_RATE     = 24000
 ```
+
+`TEPMA_UNICODE_FONT` may optionally point to a local Unicode `.ttf` font used by generated
+documents. On macOS the app automatically uses Arial Unicode when it is available.
 
 To use a fine-tuned model, change `LLM_MODEL` — no code edits needed.
 
@@ -136,6 +182,16 @@ See **`finetune/GUIDE.md`** for the full course. Short version:
 
 - `data/sessions/<timestamp>/` — per-interview `transcript.json`, `profile.json`, `resume.pdf`
 - `data/documents/` — the document library (drop any PDF here; it becomes voice-searchable)
+- `data/generated_documents/<timestamp>/` — generated application workflow, PDF, Word, JSON
+
+## Run automated tests
+
+```bash
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+The tests cover stored-document matching, safe printer fallback, guided application
+generation, PDF/DOCX rendering, refusal of official-document generation, and the new page.
 
 ## Code map
 
@@ -144,8 +200,11 @@ See **`finetune/GUIDE.md`** for the full course. Short version:
 - `routes_interview.py` — `/interview/*`: chat, speak, listen (WS), finish, resume download
 - `routes_test.py` — `/test/*`: isolated STT/TTS endpoints
 - `routes_documents.py` — `/documents/*`: list, LLM match, view, print
+- `routes_assistant.py` — `/assistant/api/*`: unified document matching/generation workflow
+- `document_render.py` — controlled application JSON → PDF and editable Word
 - `ws_stt.py` — shared live-transcription WebSocket handler
 - `profile_schema.py` — resume JSON schema + extraction prompt
 - `resume_pdf.py` — profile JSON → resume PDF
 - `make_sample_docs.py` — generates test documents
-- `static/` — frontend: `index.html` (interview), `documents.html`, `test.html`, `voice.js` (shared mic/TTS engine), `style.css`
+- `static/` — frontend pages including `assistant.html`; `voice.js` is the shared mic/TTS engine
+- `tests/test_assistant.py` — unified workflow and renderer tests
