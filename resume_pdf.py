@@ -13,6 +13,7 @@ def _latin(s: str) -> str:
 
 
 class ResumePDF(FPDF):
+    
     def __init__(self):
         super().__init__("P", "mm", "A4")
         self.set_margins(MARGIN, MARGIN, MARGIN)
@@ -76,10 +77,12 @@ def render_resume(profile: dict) -> bytes:
         pdf.cell(0, 6, _latin(contact), new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(*BODY)
 
+    # Write Summary
     if profile.get("summary"):
         pdf.section("Summary")
         pdf.body(profile["summary"])
 
+    # Write Experience
     if profile.get("experience"):
         pdf.section("Experience")
         for job in profile["experience"]:
@@ -88,7 +91,8 @@ def render_resume(profile: dict) -> bytes:
             for b in job.get("bullets", []):
                 pdf.bullet(b)
             pdf.ln(1.5)
-
+    
+    # Write Projects
     if profile.get("projects"):
         pdf.section("Projects")
         for proj in profile["projects"]:
@@ -97,7 +101,8 @@ def render_resume(profile: dict) -> bytes:
                 pdf.sub(proj["technologies"])
             pdf.body(proj.get("description", ""))
             pdf.ln(1.5)
-
+            
+    # Write Education
     if profile.get("education"):
         pdf.section("Education")
         for edu in profile["education"]:
@@ -105,11 +110,13 @@ def render_resume(profile: dict) -> bytes:
             if edu.get("details"):
                 pdf.sub(edu["details"])
             pdf.ln(1)
-
+    
+    # Write Skills
     if profile.get("skills"):
         pdf.section("Skills")
         pdf.body(", ".join(profile["skills"]))
 
+    # Write Achievements
     if profile.get("achievements"):
         pdf.section("Achievements")
         for a in profile["achievements"]:

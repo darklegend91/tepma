@@ -2,7 +2,10 @@ fastapi
 python-dotenv
 python-multipart
 faster-whisper
-kokoro 
+# Apple Silicon only: runs Whisper large-v3 on the GPU. Skipped automatically elsewhere,
+# where STT_BACKEND=auto falls back to faster-whisper.
+mlx-whisper; sys_platform == "darwin" and platform_machine == "arm64"
+kokoro
 soundfile 
 httpx 
 fpdf2

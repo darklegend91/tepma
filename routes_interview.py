@@ -1,4 +1,5 @@
 """Main interview endpoints (used by the interview page)."""
+import asyncio
 import json
 import os
 import smtplib
@@ -31,12 +32,17 @@ Rules:
 - Probe for specifics and numbers (team size, users, impact, dates) when the answer is vague.
 - The transcript comes from speech recognition, so names and emails may be misspelled; \
 confirm important spellings by asking, not by guessing.
+- Ask about the skills of the person and also mention them in the resume along with the infered skills.
 - Start by greeting the candidate, then ask for their name and the role they are targeting.
 - When you have covered all resume sections, thank them and say the interview is complete.
 - The candidate may speak English, Hindi, or Punjabi, and may mix them in one sentence. \
 ALWAYS reply in the language the candidate is mainly using. If they switch, you switch.
 - Candidates are usually in India: expect Indian universities, cities, PIN codes, and \
-phone numbers. Ask for a 6-digit PIN code when collecting their address."""
+phone numbers. Ask for a 6-digit PIN code when collecting their address.
+- Try to ask the questions which have one word answers but try with asking questions tat require a format in which answer is expected and also mention that format. If some information from that format is missing then ask that specific missing part in next question.
+- If the person says interview is over and give me the resume then end the interview immediately.
+- Ask domain related questions.
+- Ask if the person has done inter-team collaborative projets and mention that in resume."""
 
 
 @router.post("/chat")
@@ -75,7 +81,9 @@ async def interview_finish(payload: dict):
         EXTRACTOR_PROMPT + date_context(),
         PROFILE_SCHEMA,
     )
-    profile = apply_facts(profile)  # deterministic corrections (see finetune/GUIDE.md)
+    # Deterministic corrections. PIN validation hits SQLite and may fall back to a live
+    # postal-directory request, so keep it off the event loop exactly as /auto does.
+    profile = await asyncio.to_thread(apply_facts, profile)
 
     session_id = time.strftime("%Y%m%d-%H%M%S")
     session_dir = DATA_DIR / session_id

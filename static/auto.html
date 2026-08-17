@@ -217,12 +217,15 @@ async function runAuto() {
     sessionId = start.session_id;
     setProgress(10, "Interview started");
 
-    let reply = start.reply, done = false;
+    let reply = start.reply, done = false, alreadySpoken = false;
     while (running) {
-      addMsg("assistant", reply);
-      say("Interviewer speaking…");
-      try { await speak("/auto/speak", reply, selectedLanguage); }
-      catch { /* keep going silently: text is on screen */ }
+      // A streamed turn has already shown and spoken its reply sentence by sentence.
+      if (!alreadySpoken) {
+        addMsg("assistant", reply);
+        say("Interviewer speaking…");
+        try { await speak("/auto/speak", reply, selectedLanguage); }
+        catch { /* keep going silently: text is on screen */ }
+      }
       if (!running) break;
       if (done) break;
 
@@ -254,12 +257,29 @@ async function runAuto() {
       if (!answer) {                       // silence: re-ask once rather than dying
         addMsg("user", "(no speech detected)");
         reply = "Sorry, I did not catch that. Could you say it again?";
+        alreadySpoken = false;
         continue;
       }
       addMsg("user", answer);
 
       say("Thinking…");
-      const turn = await api("/auto/turn", { session_id: sessionId, answer });
+      let turn;
+      try {
+        // Streamed: the reply is spoken sentence by sentence while it is still being
+        // generated, which is the difference between ~4s and ~1.5s of silence.
+        let bubble = null;
+        turn = await streamTurn(sessionId, answer, selectedLanguage, sentence => {
+          if (!bubble) { bubble = addMsg("assistant", sentence); say("Interviewer speaking…"); }
+          else bubble.textContent += " " + sentence;
+          chatLog.scrollTop = chatLog.scrollHeight;
+        });
+        alreadySpoken = true;
+      } catch {
+        // The socket is an optimisation, never a dependency: an unattended kiosk must
+        // fall back to the plain request rather than lose the interview.
+        turn = await api("/auto/turn", { session_id: sessionId, answer });
+        alreadySpoken = false;
+      }
       reply = turn.reply;
       done = turn.done;
       const covered = (turn.covered || []).length;

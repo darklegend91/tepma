@@ -8,31 +8,55 @@ Everything runs on your own machine — no cloud APIs:
 
 | Piece | Model / tech |
 |---|---|
-| Speech-to-text | faster-whisper (`small`) |
+| Speech-to-text | Whisper `large-v3` via MLX (Apple Silicon GPU); faster-whisper `small` elsewhere |
 | Text-to-speech | Kokoro-82M |
-| LLM (interviewer + extraction) | Qwen3-8B via Ollama |
+| LLM (live interview questions) | Qwen3-4B-Instruct via Ollama |
+| LLM (profile extraction) | Qwen3-8B via Ollama |
 | Backend | FastAPI (Python 3.11) |
 | PDF generation | fpdf2 |
 
 ## First-time setup
 
 ```bash
-# 1. Install Ollama (if not installed) and pull the model
+# 1. Install Ollama (if not installed) and pull both models
 brew install ollama
-ollama pull qwen3:8b
+ollama pull qwen3:8b            # profile extraction
+ollama pull qwen3:4b-instruct   # live interview questions
 
 # 2. Create the venv and install dependencies
 python3.11 -m venv .venv
-.venv/bin/pip install fastapi "uvicorn[standard]" python-multipart \
-    faster-whisper kokoro soundfile httpx fpdf2 python-docx
+.venv/bin/pip install -r requirements.txt "uvicorn[standard]"
 
 # 3. (Optional) regenerate the sample documents
 .venv/bin/python make_sample_docs.py
 ```
 
-Whisper (~500 MB) and Kokoro (~330 MB) download automatically on first use, then work offline.
+Whisper and Kokoro (~330 MB) download automatically on first use, then work offline. On
+Apple Silicon the Whisper download is `large-v3` (~3 GB) and takes a couple of minutes the
+first time; elsewhere it is `small` (~500 MB).
 
 ## Start the project
+
+One command starts both the LLM and the web server and waits until each is answering:
+
+```bash
+./scripts/tepma.sh start
+```
+
+```bash
+./scripts/tepma.sh stop
+```
+
+`status` shows what is running and which models are loaded; `restart` does both. The port
+defaults to 8000 — override it with `PORT=8080 ./scripts/tepma.sh start`. Both services log
+to `logs/`. Starting twice is safe: an already-running Ollama is reused rather than
+launched again (a second `ollama serve` would fail with `address already in use`).
+
+Then open <http://localhost:8000/assistant> in your browser (use a real browser and allow
+the microphone). The first voice reply is slow while models load; after that it is faster.
+
+<details>
+<summary>Starting the two services by hand instead</summary>
 
 ```bash
 # 1. Start the LLM server (leave running)
@@ -44,8 +68,7 @@ ollama serve
 .venv/bin/uvicorn server:app --host 127.0.0.1 --port 8000
 ```
 
-Then open <http://localhost:8000/assistant> in your browser (use a real browser and allow
-the microphone). The first voice reply is slow while models load; after that it is faster.
+</details>
 
 Pages:
 
@@ -104,10 +127,66 @@ Conversation state lives on the **server** and is written to disk every turn, so
 or crash never loses an interview. Errors surface as popups, and printer failures are
 non-fatal: the resume is always saved and downloadable even if printing fails.
 
+## Sharing it on a public URL (cloud tunnel)
+
+The server only listens on `127.0.0.1`, so it is not reachable from another machine. A
+tunnel gives it a temporary public `https://` address — useful for a demo, or for running
+the kiosk on one machine and opening it on a phone.
+
+Install the tunnel client once:
+
+```bash
+brew install cloudflared
+```
+
+Then start everything and publish it in one step:
+
+```bash
+./scripts/tepma.sh tunnel
+```
+
+It prints the address to open, for example:
+
+```
+PUBLIC URL:  https://random-words-here.trycloudflare.com/auto
+```
+
+The URL is temporary and anonymous: it lasts only while `cloudflared` runs, and stopping
+the tunnel invalidates it. Starting a new tunnel always produces a **new** URL, so it
+cannot be bookmarked or printed on signage.
+
+> **Before you share the link, note what it exposes.** Anyone who has the URL can run an
+> interview, generate documents, read the document library at `/docs-assistant`, and
+> **send jobs to your default printer**. There is no login. Microphone access also
+> requires `https`, which the tunnel provides — a plain `http://` LAN address will not
+> work in most browsers. Treat the link as a live session, not a deployment: share it
+> with the people in the room and stop the tunnel when you are done.
+
+<details>
+<summary>Doing it manually, or with ngrok instead</summary>
+
+```bash
+# cloudflared, in its own terminal, after the server is already running
+cloudflared tunnel --url http://127.0.0.1:8000
+```
+
+```bash
+# ngrok is an alternative and needs a free account + authtoken
+ngrok http 8000
+```
+
+</details>
+
 ## Stop the project and test tunnel
 
-The normal way to stop everything is to press **Ctrl+C** once in each terminal where
-`uvicorn`, `ollama serve`, or `cloudflared tunnel` is running.
+The quickest way to stop everything — server, LLM, and tunnel — is:
+
+```bash
+./scripts/tepma.sh stop
+```
+
+Otherwise, press **Ctrl+C** once in each terminal where `uvicorn`, `ollama serve`, or
+`cloudflared tunnel` is running.
 
 If those terminals are no longer available, stop all three processes from a new terminal:
 
@@ -141,11 +220,50 @@ Settings live in `.env` (loaded by `engines.py`, with safe defaults if the file 
 
 ```
 OLLAMA_URL   = "http://127.0.0.1:11434"
-LLM_MODEL    = "qwen3:8b"
-WHISPER_MODEL= "small"
+LLM_MODEL    = "qwen3:8b"          # profile extraction, once per interview
+TURN_MODEL   = "qwen3:4b-instruct" # live interview questions
+STT_BACKEND  = "auto"              # auto | mlx | faster-whisper
+MLX_WHISPER_MODEL = "mlx-community/whisper-large-v3-mlx"
+WHISPER_MODEL= "small"             # faster-whisper (CPU) fallback only
 TTS_VOICE    = "af_heart"
 TTS_RATE     = 24000
 ```
+
+### Speech-to-text: why two backends
+
+`faster-whisper` uses CTranslate2, which has **no Metal backend** — it runs on the CPU
+even on an M-series Mac. That caps you at the `small` model, which cannot transcribe
+Hindi: in testing it returned the **wrong year** (2020 for 2027) and mangled every phone
+number. MLX runs `large-v3` on the GPU instead, and is both more accurate *and faster*
+than CPU `small`:
+
+| backend / model | spoken numbers correct | per utterance |
+|---|---|---|
+| faster-whisper `small` (CPU) | wrong year, garbled phone | 4.9 s |
+| faster-whisper `large-v3` (CPU) | good | 16.6 s |
+| **MLX `large-v3` (GPU)** | **5 of 6** | **3.5 s** |
+| MLX `large-v3-turbo` (GPU) | 2 of 6 | 2.5 s |
+
+`large-v3-turbo` is tempting but **not** safe here: it drops digits from phone numbers
+while still producing a plausible 10-digit result, which `normalise_phone` then accepts
+silently. A wrong number that looks right is worse than a slow one.
+
+`STT_BACKEND=auto` picks MLX when `mlx-whisper` imports and falls back to faster-whisper
+otherwise, so the project still runs on Intel Macs and Linux with no config change.
+
+MLX has no voice-activity filter, so `engines.py` adds two guards: an RMS floor
+(`SILENCE_RMS`) that skips the model entirely on silence, and a repetition check that
+discards Whisper's noise output (`ॐ ॐ ॐ`). Both are deliberately conservative — a spoken
+PIN legitimately repeats digits, and dropping a real answer is unrecoverable.
+
+The two models are deliberately different. Extraction runs once, nobody is waiting on it,
+and accuracy decides what gets printed — so it uses the larger model. The interview turn
+runs up to 22 times with a candidate listening, and **must** be a non-thinking *instruct*
+model: `qwen3:8b` is a hybrid reasoning model, and the `"think": False` needed to keep it
+fast enough for a voice call makes it leak its topic bookkeeping into the spoken reply
+(4 of 9 replies unusable in testing). Leaving thinking enabled fixes the quality but costs
+~35 s per turn. An instruct model has no thinking mode to suppress, so it is both correct
+and faster here.
 
 `TEPMA_UNICODE_FONT` may optionally point to a local Unicode `.ttf` font used by generated
 documents. On macOS the app automatically uses Arial Unicode when it is available.
@@ -161,11 +279,30 @@ Email sending reads `SMTP_USER` / `SMTP_PASS` from the environment (never commit
 - **Date awareness** — today's date is injected into prompts, so "two years back" resolves correctly
 - **Indian institutions** — fuzzy-matched against `data/reference/universities.json`
   (`"Thapadi University"` → `"Thapar Institute of Engineering and Technology"`)
-- **PIN codes** — validated and the state auto-filled from `data/reference/pincode_ranges.json`
+- **PIN codes** — matched locally against an indexed Department of Posts snapshot; API
+  lookup is used only when the local snapshot is absent or does not contain the PIN
 - **Phone numbers** — normalised to `+91 XXXXXXXXXX`
 
-Every change is recorded in the profile's `_corrections` list. To improve accuracy, add
-entries to the reference JSON files — no retraining required.
+Every change is recorded in the profile's `_corrections` list. A PIN that is valid but
+disagrees with the spoken city is never merged in silently — it is reported separately in
+`_validation_warnings`, and returned by `/auto/profile` as `warnings`.
+
+To improve accuracy, add entries to the reference files — no retraining required.
+
+Both reference files live under the git-ignored `data/` directory, so a fresh checkout has
+neither. `universities.json` is required for institution correction; without it names are
+left exactly as the candidate said them (the interview still completes). Copy both files
+with the deployment, or rebuild the PIN database on the target machine.
+
+Build or refresh the local PIN database once during setup:
+
+```bash
+.venv/bin/python scripts/build_pincode_db.py
+```
+
+This creates `data/reference/india_post_pincodes.sqlite3`. The file is intentionally under
+the ignored `data/` directory; copy it with the deployment or run the builder on the target
+machine. Set `PINCODE_DB_PATH` only if you store it elsewhere.
 
 ## Fine-tuning (optional)
 

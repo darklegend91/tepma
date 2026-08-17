@@ -1,22 +1,25 @@
 """Fully automated kiosk interview: one click, then hands-free through to printing.
 
-Flow:  POST /auto/start  -> greeting
-       POST /auto/turn   -> next question, or done=true when the LLM has everything
-       POST /auto/finish -> extract profile, build PDF, send to printer
+Flow:  POST /auto/start        -> greeting
+       WS   /auto/turn-stream  -> next question, spoken sentence by sentence as it is
+                                  generated; POST /auto/turn is the fallback
+       POST /auto/finish       -> extract profile, build PDF, send to printer
 
 Unlike /interview/*, conversation state lives on the SERVER (keyed by session id) and is
 written to disk every turn, so a refresh or crash never loses an interview.
 """
+import asyncio
 import json
 import subprocess
 import time
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
-from engines import llm_extract, synthesize_wav
+from engines import (TURN_MODEL, extract_partial_string, llm_extract, llm_stream,
+                     split_sentences, synthesize_wav)
 from facts import apply_facts, date_context
 from printer_status import default_printer_status
 from profile_schema import EXTRACTOR_PROMPT, PROFILE_SCHEMA
@@ -48,16 +51,20 @@ TOPICS = {
 # session_id -> {"messages": [...], "turns": int, "dir": Path, "covered": set}
 _sessions: dict[str, dict] = {}
 
+# "reply" is deliberately first: constrained decoding emits properties in schema order,
+# so putting the spoken text first lets /auto/turn-stream start speaking a sentence while
+# the model is still choosing the "covered" topics. Reordering is safe because coverage
+# is handed to the model explicitly by _coverage_note() and only ever grows server-side.
 TURN_SCHEMA = {
     "type": "object",
     "properties": {
+        "reply": {"type": "string"},
         "covered": {
             "type": "array",
             "items": {"type": "string", "enum": list(TOPICS)},
         },
-        "reply": {"type": "string"},
     },
-    "required": ["covered", "reply"],
+    "required": ["reply", "covered"],
 }
 
 AUTO_PROMPT = """You are a friendly, professional resume interviewer on a voice call.
@@ -87,13 +94,24 @@ def _remaining(covered: set) -> list[str]:
 
 
 def _coverage_note(covered: set) -> str:
-    """Explicit state handed to the model each turn - this is what stops repeat questions."""
+    """Explicit state handed to the model each turn - this is what stops repeat questions.
+
+    Delivered as the last message rather than in the system prompt. It changes every turn,
+    and Ollama can only reuse its cached prefix up to the first token that differs - so
+    putting it in the prompt prefix forced the whole conversation to be re-processed each
+    turn, with prompt evaluation growing as the interview went on. At the end, everything
+    before it stays byte-identical and only this note is new.
+
+    The parenthesised form marks it as a director's aside rather than something the
+    candidate said, matching the "(The candidate has joined...)" convention in /auto/start.
+    """
     remaining = _remaining(covered)
     if not remaining:
-        return "\n\nAlready covered: everything. Still needed: NOTHING - close the interview now."
-    return (f"\n\nAlready covered: {', '.join(sorted(covered)) or 'nothing yet'}."
+        return "(Interview status: everything is covered. Still needed: NOTHING - close the interview now.)"
+    return (f"(Interview status - not spoken by the candidate."
+            f"\nAlready covered: {', '.join(sorted(covered)) or 'nothing yet'}."
             f"\nStill needed, in order: {'; '.join(f'{t} ({TOPICS[t]})' for t in remaining)}."
-            f"\nAsk about the FIRST item in that list.")
+            f"\nAsk about the FIRST item in that list, and never re-ask a covered topic.)")
 
 
 def _language_note(language: str) -> str:
@@ -146,9 +164,10 @@ async def auto_start(payload: dict):
     messages = [{"role": "user", "content":
                  "(The candidate has joined the voice call. Greet them and begin the interview.)"}]
     result = await llm_extract(
-        messages,
-        AUTO_PROMPT + date_context() + _language_note(language) + _coverage_note(set()),
+        messages + [{"role": "user", "content": _coverage_note(set())}],
+        AUTO_PROMPT + date_context() + _language_note(language),
         TURN_SCHEMA,
+        model=TURN_MODEL,
     )
     reply = result["reply"].strip()
     messages.append({"role": "assistant", "content": reply})
@@ -168,6 +187,14 @@ async def auto_turn(payload: dict):
     if not answer:
         raise HTTPException(400, "Empty answer")
 
+    _begin_turn(s, answer)
+    result = await llm_extract(_turn_messages(s), _turn_system(s), TURN_SCHEMA,
+                               model=TURN_MODEL)
+    return _finish_turn(s, result)
+
+
+def _begin_turn(s: dict, answer: str):
+    """Record the candidate's answer and mark the topic we asked about as covered."""
     s["messages"].append({"role": "user", "content": answer})
     s["turns"] += 1
 
@@ -179,15 +206,26 @@ async def auto_turn(payload: dict):
     elif asked:
         s["covered"].add(asked)  # they declined it - do not ask again either
 
-    result = await llm_extract(
-        s["messages"],
-        AUTO_PROMPT + date_context() + _language_note(s.get("language", "en"))
-        + _coverage_note(s["covered"]),
-        TURN_SCHEMA,
-    )
+
+def _turn_system(s: dict) -> str:
+    """The stable half of the prompt. Constant for the whole session, so it stays cached."""
+    return AUTO_PROMPT + date_context() + _language_note(s.get("language", "en"))
+
+
+def _turn_messages(s: dict) -> list[dict]:
+    """Conversation plus the current coverage note, without storing the note.
+
+    The note must not go into s["messages"]: that is the saved transcript, and the
+    extraction pass reads it back to build the resume.
+    """
+    return s["messages"] + [{"role": "user", "content": _coverage_note(s["covered"])}]
+
+
+def _finish_turn(s: dict, result: dict) -> dict:
+    """Apply a completed turn result to the session and build the client payload."""
     # coverage only ever grows: a later turn must not "un-answer" an earlier topic
     s["covered"].update(t for t in result.get("covered", []) if t in TOPICS)
-    reply = result["reply"].strip()
+    reply = (result.get("reply") or "").strip()
     remaining = _remaining(s["covered"])
     s["asked"] = remaining[0] if remaining else None
 
@@ -223,7 +261,9 @@ async def _build_profile(s: dict) -> dict:
         )
     except Exception as e:
         raise HTTPException(500, f"Could not build the profile: {e}")
-    profile = apply_facts(profile)
+    # PIN validation performs a live postal-directory request; keep it off the
+    # FastAPI event loop so other sessions remain responsive.
+    profile = await asyncio.to_thread(apply_facts, profile)
     session_dir = s["dir"]
     (session_dir / "profile.json").write_text(json.dumps(profile, indent=2, ensure_ascii=False))
     return profile
@@ -285,7 +325,13 @@ async def auto_profile(payload: dict):
     """Extract and save a structured profile from the completed interview."""
     s = _session(payload.get("session_id", ""))
     profile = await _build_profile(s)
-    return {"profile": profile, "corrections": profile.get("_corrections", [])}
+    return {
+        "profile": profile,
+        "corrections": profile.get("_corrections", []),
+        # A PIN that is valid but disagrees with the spoken city is never auto-merged,
+        # so the operator has to be told - the kiosk otherwise prints it unnoticed.
+        "warnings": profile.get("_validation_warnings", []),
+    }
 
 
 @router.post("/build-resume")
@@ -317,6 +363,7 @@ async def auto_finish(payload: dict):
         **printing,
         "profile": profile,
         "corrections": profile.get("_corrections", []),
+        "warnings": profile.get("_validation_warnings", []),
     }
 
 
@@ -347,4 +394,75 @@ async def auto_speak(payload: dict):
     return Response(content=synthesize_wav(text), media_type="audio/wav")
 
 
+async def turn_stream_socket(ws: WebSocket):
+    """Stream one interview turn, speaking each sentence as soon as it is generated.
+
+    The non-streaming POST /auto/turn produces nothing until the whole JSON reply is
+    complete, and only then is the audio synthesized - several seconds of silence on a
+    voice call. Here the reply is decoded out of the partial JSON as it arrives, split
+    on sentence boundaries, and each sentence is synthesized and sent immediately, so
+    the candidate hears the first words while the model is still writing the rest.
+
+    Protocol, per turn:
+        <- {"session_id": ..., "answer": ...}
+        -> {"type": "sentence", "text": ...}   followed by a binary WAV frame for
+           English; text only for Hindi/Punjabi, which the browser speaks itself
+        -> {"type": "done", ...}               same payload as POST /auto/turn
+        -> {"type": "error", "detail": ...}    client should fall back to POST
+    """
+    await ws.accept()
+    try:
+        request = await ws.receive_json()
+        s = _session(request.get("session_id", ""))
+        answer = (request.get("answer") or "").strip()
+        if not answer:
+            await ws.send_json({"type": "error", "detail": "Empty answer"})
+            return
+
+        # Kokoro is English-only (KPipeline lang_code="a"); Hindi and Punjabi are
+        # spoken by the browser, so for those we stream the text and skip synthesis.
+        speak_here = s.get("language", "en") == "en"
+        _begin_turn(s, answer)
+
+        raw, spoken, pending = "", "", ""
+        async for delta in llm_stream(_turn_messages(s), _turn_system(s), TURN_SCHEMA,
+                                      model=TURN_MODEL):
+            raw += delta
+            reply_so_far = extract_partial_string(raw, "reply")
+            if len(reply_so_far) <= len(spoken) + len(pending):
+                continue
+            pending = reply_so_far[len(spoken):]
+            sentences, pending = split_sentences(pending)
+            for sentence in sentences:
+                spoken += sentence if spoken.endswith(" ") or not spoken else " " + sentence
+                await ws.send_json({"type": "sentence", "text": sentence})
+                if speak_here:
+                    # Kokoro is blocking and CPU-bound - never run it on the event loop.
+                    audio = await asyncio.to_thread(synthesize_wav, sentence)
+                    await ws.send_bytes(audio)
+
+        try:
+            result = json.loads(raw)
+        except ValueError:
+            # Constrained decoding makes this near-impossible, but a dropped connection
+            # mid-stream would leave truncated JSON. Salvage whatever was spoken.
+            result = {"reply": extract_partial_string(raw, "reply"), "covered": []}
+
+        # Anything after the last sentence break (no trailing punctuation) is still unsaid.
+        tail = (result.get("reply") or "")[len(spoken):].strip()
+        if tail:
+            await ws.send_json({"type": "sentence", "text": tail})
+            if speak_here:
+                await ws.send_bytes(await asyncio.to_thread(synthesize_wav, tail))
+
+        await ws.send_json({"type": "done", **_finish_turn(s, result)})
+    except WebSocketDisconnect:
+        pass
+    except HTTPException as exc:
+        await ws.send_json({"type": "error", "detail": exc.detail})
+    except Exception as exc:
+        await ws.send_json({"type": "error", "detail": str(exc)})
+
+
 router.add_api_websocket_route("/listen", live_transcribe_socket)
+router.add_api_websocket_route("/turn-stream", turn_stream_socket)

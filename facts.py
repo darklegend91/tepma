@@ -8,10 +8,15 @@ Handles the knowledge an LLM should never be trusted to memorise:
 See finetune/GUIDE.md, Lesson 1, for why this is a lookup table and not training data.
 """
 import json
+import os
 import re
+import sqlite3
 from datetime import date
 from difflib import SequenceMatcher
+from functools import lru_cache
 from pathlib import Path
+
+import httpx
 
 REF_DIR = Path(__file__).parent / "data" / "reference"
 
@@ -27,11 +32,21 @@ LANG_NAMES = {"en": "English", "hi": "Hindi", "pa": "Punjabi"}
 
 
 def institutions() -> list[str]:
+    """Canonical institution names, or an empty list if the reference file is absent.
+
+    A missing or malformed reference file must never abort a finished interview: the
+    correction is an improvement, not a prerequisite. Without it names are simply left
+    exactly as the candidate said them.
+    """
     global _institutions
     if _institutions is None:
-        data = json.loads((REF_DIR / "universities.json").read_text())
-        _institutions = data["institutions"]
-    return _institutions
+        try:
+            data = json.loads((REF_DIR / "universities.json").read_text())
+            _institutions = list(data["institutions"])
+        except (OSError, json.JSONDecodeError, KeyError, TypeError):
+            print("facts: universities.json unavailable - skipping institution correction")
+            _institutions = []
+    return _institutions # type:ignore
 
 
 def pin_ranges() -> dict[str, str]:
@@ -61,26 +76,159 @@ def date_context() -> str:
 
 # ------------------------------------------------------- institution correction
 
+# Words that carry no distinguishing information in an institution name. Speech
+# recognition frequently misspells the long ones ("univarsity", "collage"), so these
+# are matched fuzzily below rather than exactly.
+_GENERIC_WORDS = ("university", "universities", "vishwavidyalaya", "vidyapeeth",
+                  "college", "institute", "technology", "engineering", "school")
+_SHORT_STOPWORDS = {"of", "the", "and", "for", "in", "at"}
+
+
+def _strip_generic(token: str) -> bool:
+    """Is this token a generic institution word, even if it is misspelt?"""
+    if token in _SHORT_STOPWORDS:
+        return True
+    if len(token) < 6:
+        return False
+    return any(SequenceMatcher(None, token, word).ratio() >= 0.80
+               for word in _GENERIC_WORDS)
+
+
+# Colloquial campus city names. Applied to both sides of the comparison, so a
+# candidate saying "NIT Trichy" lines up with the official "... Tiruchirappalli".
+_CITY_ALIASES = (
+    (r"\btrichy\b", "tiruchirappalli"),
+    (r"\bbangalore\b", "bengaluru"),
+    (r"\bbombay\b", "bombay"),
+    (r"\bcalcutta\b", "calcutta"),
+    (r"\bvizag\b", "visakhapatnam"),
+    (r"\bbbsr\b", "bhubaneswar"),
+    (r"\bkgp\b", "kharagpur"),
+    (r"\bvaranasi\b", "varanasi bhu"),
+)
+
+
 def _norm(s: str) -> str:
     s = s.lower()
+    # "i i t rurkee" -> "iit rurkee". Whisper reliably spells initialisms out as
+    # separate letters, which would otherwise never match the abbreviations below.
+    s = re.sub(r"\b(?:[a-z]\s+){1,6}[a-z]\b", lambda m: m.group(0).replace(" ", ""), s)
+    for old, new in _CITY_ALIASES:
+        s = re.sub(old, new, s)
     # expand common spoken/abbreviated forms so fuzzy matching lines up
     for short, full in (
-        (r"\biit\b", "indian institute of technology"),
-        (r"\bnit\b", "national institute of technology"),
-        (r"\biiit\b", "indian institute of information technology"),
-        (r"\biim\b", "indian institute of management"),
-        (r"\biisc\b", "indian institute of science"),
-        (r"\bbits\b", "birla institute of technology and science"),
-        (r"\bvit\b", "vellore institute of technology"),
-        (r"\bdtu\b", "delhi technological university"),
-        (r"\bpu\b", "panjab university"),
-        (r"\bgndu\b", "guru nanak dev university"),
-        (r"\blpu\b", "lovely professional university"),
-        (r"\bcu\b", "chandigarh university"),
+    # Special IIIT names
+    (r"\biiit[\s-]*(?:d|delhi)\b",
+     "indraprastha institute of information technology delhi"),
+    (r"\biiit[\s-]*(?:h|hyd|hyderabad)\b",
+     "international institute of information technology hyderabad"),
+    (r"\biiit[\s-]*(?:b|blr|bangalore|bengaluru)\b",
+     "international institute of information technology bangalore"),
+
+    # Institution families
+    (r"\biiit\b", "indian institute of information technology"),
+    (r"\biit\b", "indian institute of technology"),
+    (r"\bnit\b", "national institute of technology"),
+    (r"\biim\b", "indian institute of management"),
+    (r"\biisc\b", "indian institute of science"),
+    (r"\biiser\b", "indian institute of science education and research"),
+    (r"\baiims\b", "all india institute of medical sciences"),
+    (r"\bnlu\b", "national law university"),
+    (r"\bniper\b", "national institute of pharmaceutical education and research"),
+    (r"\bnift\b", "national institute of fashion technology"),
+    (r"\bnid\b", "national institute of design"),
+    (r"\bspa\b", "school of planning and architecture"),
+    (r"\bbits\b", "birla institute of technology and science"),
+
+    # National and central institutions
+    (r"\biist\b", "indian institute of space science and technology"),
+    (r"\biiest\b", "indian institute of engineering science and technology"),
+    (r"\bniser\b", "national institute of science education and research"),
+    (r"\bisi\b", "indian statistical institute"),
+    (r"\btiss\b", "tata institute of social sciences"),
+    (r"\btifr\b", "tata institute of fundamental research"),
+    (r"\bjnu\b", "jawaharlal nehru university"),
+    (r"\bbhu\b", "banaras hindu university"),
+    (r"\bamu\b", "aligarh muslim university"),
+    (r"\bjmi\b", "jamia millia islamia"),
+    (r"\bignou\b", "indira gandhi national open university"),
+    (r"\b(?:uoh|hcu)\b", "university of hyderabad"),
+    (r"\beflu\b", "english and foreign languages university"),
+    (r"\bmanuu\b", "maulana azad national urdu university"),
+    (r"\bnehu\b", "north eastern hill university"),
+    (r"\bhnbgu\b", "hemvati nandan bahuguna garhwal university"),
+    (r"\bign?tu\b", "indira gandhi national tribal university"),
+
+    # Delhi and northern India
+    (r"\bdtu\b", "delhi technological university"),
+    (r"\bnsut\b", "netaji subhas university of technology"),
+    (r"\bigdtuw\b", "indira gandhi delhi technical university for women"),
+    (r"\b(?:ggsipu|ipu)\b",
+     "guru gobind singh indraprastha vishwavidyalaya"),
+    (r"\bgndu\b", "guru nanak dev university"),
+    (r"\blpu\b", "lovely professional university"),
+
+    # Technical universities
+    (r"\b(?:aktu|uptu)\b",
+     "dr apj abdul kalam technical university"),
+    (r"\bktu\b", "apj abdul kalam technological university"),
+    (r"\bvtu\b", "visvesvaraya technological university"),
+    (r"\b(?:makaut|wbut)\b",
+     "maulana abul kalam azad university of technology"),
+    (r"\bjntuh\b", "jawaharlal nehru technological university hyderabad"),
+    (r"\bjntuk\b", "jawaharlal nehru technological university kakinada"),
+    (r"\bjntua\b", "jawaharlal nehru technological university anantapur"),
+    (r"\bgtu\b", "gujarat technological university"),
+    (r"\brtu\b", "rajasthan technical university"),
+    (r"\brgpv\b", "rajiv gandhi proudyogiki vishwavidyalaya"),
+    (r"\bbput\b", "biju patnaik university of technology"),
+    (r"\bcsvtu\b", "chhattisgarh swami vivekanand technical university"),
+    (r"\bhbtu\b", "harcourt butler technical university"),
+    (r"\bikgptu\b", "ik gujral punjab technical university"),
+    (r"\bsppu\b", "savitribai phule pune university"),
+    (r"\bcusat\b", "cochin university of science and technology"),
+
+    # Law universities
+    (r"\bnlsiu\b", "national law school of india university"),
+    (r"\bnalsar\b", "nalsar university of law"),
+    (r"\bnlud\b", "national law university delhi"),
+    (r"\bnliu\b", "national law institute university"),
+    (r"\bgnlu\b", "gujarat national law university"),
+    (r"\bhnlu\b", "hidayatullah national law university"),
+    (r"\brgnul\b", "rajiv gandhi national university of law"),
+    (r"\bcnlu\b", "chanakya national law university"),
+    (r"\bnuals\b", "national university of advanced legal studies"),
+    (r"\bnluo\b", "national law university odisha"),
+    (r"\bnusrl\b", "national university of study and research in law"),
+
+    # Private and deemed universities
+    (r"\bvit\b", "vellore institute of technology"),
+    (r"\b(?:srm|srmist)\b",
+     "srm institute of science and technology"),
+    (r"\bmahe\b", "manipal academy of higher education"),
+    (r"\btiet\b", "thapar institute of engineering and technology"),
+    (r"\bkiit\b", "kalinga institute of industrial technology"),
+    (r"\bsoa\b", "siksha o anusandhan"),
+    (r"\bgitam\b", "gandhi institute of technology and management"),
+    (r"\bsastra\b",
+     "shanmugha arts science technology and research academy"),
+    (r"\bnmims\b", "narsee monjee institute of management studies"),
+    (r"\bupes\b", "university of petroleum and energy studies"),
+
+    (r"\bpu\s+(?:chandigarh|panjab)\b", "panjab university"),
+    (r"\bpu\s+patna\b", "patna university"),
+    (r"\bpu\s+(?:pondicherry|puducherry)\b", "pondicherry university"),
+    (r"\bcu\s+chandigarh\b", "chandigarh university"),
+    (r"\bcu\s+(?:calcutta|kolkata)\b", "university of calcutta"),
+    (r"\bdu\s+(?:delhi|new delhi)\b", "university of delhi"),
+    (r"\bju\s+(?:jadavpur|kolkata)\b", "jadavpur university"),
+    (r"\bou\s+hyderabad\b", "osmania university"),
+    (r"\bau\s+chennai\b", "anna university"),
     ):
         s = re.sub(short, full, s)
-    s = re.sub(r"\b(university|institute|college|of|the|and|technology|engineering)\b", " ", s)
-    return re.sub(r"[^a-z0-9 ]", " ", s).strip()
+    s = re.sub(r"[^a-z0-9 ]", " ", s)
+    # Drop generic words last, fuzzily, so misspellings do not survive as fake evidence.
+    return " ".join(t for t in s.split() if not _strip_generic(t)).strip()
 
 
 def correct_institution(name: str) -> tuple[str, float]:
@@ -94,12 +242,20 @@ def correct_institution(name: str) -> tuple[str, float]:
     target = _norm(name)
     if not target:
         return name, 0.0
+    target_tokens = set(target.split())
     best, best_score = name, 0.0
     for canonical in institutions():
-        score = SequenceMatcher(None, target, _norm(canonical)).ratio()
-        # a full token match ("thapar" inside both) is strong evidence
-        if set(target.split()) & set(_norm(canonical).split()):
-            score = max(score, 0.75)
+        canonical_norm = _norm(canonical)
+        score = SequenceMatcher(None, target, canonical_norm).ratio()
+        # Shared tokens are strong evidence, but only in proportion to how much of the
+        # name they actually cover. A flat boost for any single shared word makes every
+        # "Guru ..." or "National ..." institution score identically, and the winner is
+        # then decided by list order rather than by similarity.
+        canonical_tokens = set(canonical_norm.split())
+        overlap = target_tokens & canonical_tokens
+        if overlap:
+            coverage = len(overlap) / max(len(target_tokens), len(canonical_tokens))
+            score = max(score, coverage)
         if score > best_score:
             best, best_score = canonical, score
     return (best, best_score) if best_score >= MATCH_THRESHOLD else (name, best_score)
@@ -109,19 +265,320 @@ def correct_institution(name: str) -> tuple[str, float]:
 
 PIN_RE = re.compile(r"\b(\d{6})\b")
 
+# Department of Posts' All India Pincode Directory, exposed through data.gov.in.
+# The API key below is the public key published with the resource; deployments can
+# override it with their own data.gov.in key without changing the code.
+PINCODE_API_URL = (
+    "https://api.data.gov.in/resource/5c2f62fe-5afa-4119-a499-fec9d604d5bd"
+)
+PINCODE_SECONDARY_API_URL = "https://api.postalpincode.in/pincode/{pin}"
+PINCODE_DB_PATH = Path(
+    os.getenv("PINCODE_DB_PATH", str(REF_DIR / "india_post_pincodes.sqlite3"))
+)
+PINCODE_API_KEY = os.getenv(
+    "DATA_GOV_IN_API_KEY",
+    "579b464db66ec23bdd000001cdc3b564546246a772a26393094f5645",
+)
+PINCODE_API_TIMEOUT = 5.0
+PINCODE_MATCH_THRESHOLD = 0.72
+
+
+class PincodeServiceUnavailable(RuntimeError):
+    """Raised when the postal directory cannot provide a trustworthy response."""
+
+
+class PincodeDatabaseUnavailable(RuntimeError):
+    """Raised when the optional local postal snapshot cannot be queried."""
+
+
+_PLACE_ALIASES = (
+    (r"\bbangalore\b", "bengaluru"),
+    (r"\bbombay\b", "mumbai"),
+    (r"\bcalcutta\b", "kolkata"),
+    (r"\bcochin\b", "kochi"),
+    (r"\bgauhati\b", "guwahati"),
+    (r"\bgurgaon\b", "gurugram"),
+    (r"\bmadras\b", "chennai"),
+    (r"\bmysore\b", "mysuru"),
+    (r"\borissa\b", "odisha"),
+    (r"\bpondicherry\b", "puducherry"),
+    (r"\bpoona\b", "pune"),
+    (r"\btrivandrum\b", "thiruvananthapuram"),
+    (r"\bs(?:ahibzada)?\s*a(?:jit)?\s*s(?:ingh)?\s+nagar\b", "mohali"),
+)
+
+
+def _normalise_place(value: str, pin: str = "") -> str:
+    """Normalise address/place text for a conservative local comparison."""
+    value = (value or "").lower()
+    if pin:
+        value = re.sub(rf"\b{re.escape(pin)}\b", " ", value)
+    for old, new in _PLACE_ALIASES:
+        value = re.sub(old, new, value)
+    value = re.sub(r"[^a-z0-9 ]", " ", value)
+    # These words say nothing about the actual place. Keep terms such as sector,
+    # road and village because they can occur in a post-office name.
+    value = re.sub(
+        r"\b(?:address|flat|floor|house|india|no|number|pin|pincode|postal|code)\b",
+        " ",
+        value,
+    )
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _place_score(text: str, candidate: str) -> float:
+    """Score a postal place name against the user-supplied address text."""
+    if not text or not candidate:
+        return 0.0
+    if candidate in text or text in candidate:
+        return 1.0
+    text_tokens = set(text.split())
+    candidate_tokens = set(candidate.split())
+    overlap = text_tokens & candidate_tokens
+    coverage = len(overlap) / len(candidate_tokens) if candidate_tokens else 0.0
+    return max(coverage, SequenceMatcher(None, text, candidate).ratio())
+
+
+def _display_place(value: str) -> str:
+    return re.sub(r"\s+", " ", value or "").strip().title()
+
+
+@lru_cache(maxsize=4096)
+def _fetch_local_post_offices(pin: str) -> tuple[dict, ...]:
+    """Read one PIN from the local indexed Department of Posts snapshot."""
+    if not PINCODE_DB_PATH.is_file():
+        raise PincodeDatabaseUnavailable("Local postal database is not installed")
+
+    try:
+        database_uri = f"file:{PINCODE_DB_PATH.resolve()}?mode=ro&immutable=1"
+        with sqlite3.connect(database_uri, uri=True, timeout=1.0) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                """
+                SELECT circlename, regionname, divisionname, officename, pincode,
+                       officetype, delivery, district, statename
+                FROM post_offices
+                WHERE pincode = ?
+                """,
+                (pin,),
+            ).fetchall()
+    except sqlite3.Error as exc:
+        raise PincodeDatabaseUnavailable("Local postal database is unreadable") from exc
+    return tuple(dict(row) for row in rows)
+
+
+@lru_cache(maxsize=2048)
+def _fetch_post_offices(pin: str) -> tuple[dict, ...]:
+    """Fetch Department of Posts records for one PIN; cache to reduce latency.
+
+    Only the PIN is sent to data.gov.in. The candidate's full address remains local.
+    An empty tuple is an authoritative "not found" response. Service/schema errors
+    raise PincodeServiceUnavailable so callers can distinguish them from invalid PINs.
+    """
+    try:
+        response = httpx.get(
+            PINCODE_API_URL,
+            params={
+                "api-key": PINCODE_API_KEY,
+                "format": "json",
+                "limit": 100,
+                "filters[pincode]": pin,
+            },
+            headers={"Accept": "application/json", "User-Agent": "TePMA/1.0"},
+            timeout=PINCODE_API_TIMEOUT,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise PincodeServiceUnavailable("Postal PIN service is unavailable") from exc
+
+    if not isinstance(payload, dict) or payload.get("status") != "ok":
+        raise PincodeServiceUnavailable("Unexpected postal PIN service response")
+
+    records = payload.get("records")
+    if not isinstance(records, list):
+        raise PincodeServiceUnavailable("Postal PIN records are missing")
+
+    # Ignore malformed or mismatched records rather than trusting the response blindly.
+    return tuple(
+        record for record in records
+        if isinstance(record, dict) and str(record.get("pincode", "")) == pin
+    )
+
+
+@lru_cache(maxsize=2048)
+def _fetch_secondary_post_offices(pin: str) -> tuple[dict, ...]:
+    """Use the public postal directory only when data.gov.in is unavailable."""
+    try:
+        response = httpx.get(
+            PINCODE_SECONDARY_API_URL.format(pin=pin),
+            headers={"Accept": "application/json", "User-Agent": "TePMA/1.0"},
+            timeout=PINCODE_API_TIMEOUT,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise PincodeServiceUnavailable("Secondary postal service is unavailable") from exc
+
+    if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
+        raise PincodeServiceUnavailable("Unexpected secondary postal response")
+    result = payload[0]
+    if str(result.get("Status", "")).lower() != "success":
+        return ()
+    offices = result.get("PostOffice")
+    if not isinstance(offices, list):
+        raise PincodeServiceUnavailable("Secondary postal records are missing")
+
+    records = []
+    for office in offices:
+        if not isinstance(office, dict) or str(office.get("Pincode", "")) != pin:
+            continue
+        # Convert the secondary schema once so all matching logic below remains
+        # source-independent and easy to test.
+        records.append({
+            "circlename": office.get("Circle"),
+            "regionname": office.get("Region"),
+            "divisionname": office.get("Division"),
+            "officename": office.get("Name"),
+            "pincode": str(office.get("Pincode", "")),
+            "officetype": office.get("BranchType"),
+            "delivery": office.get("DeliveryStatus"),
+            "district": office.get("District"),
+            "statename": office.get("State"),
+        })
+    return tuple(records)
+
+
+def _fallback_pincode(pin: str) -> dict | None:
+    """Return the old prefix-based result when live verification is unavailable."""
+    try:
+        region = pin_ranges().get(pin[:2])
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not region:
+        return None
+    return {
+        "pincode": pin,
+        "state": region,
+        "district": None,
+        "districts": [],
+        "post_offices": [],
+        "place_match": None,
+        "place_match_score": 0.0,
+        "match_field": None,
+        "matched_place": None,
+        "verified": False,
+        "confidence": 0.25,
+        "source": "local_prefix_fallback",
+    }
+
 
 def lookup_pincode(text: str) -> dict | None:
-    """Find a 6-digit PIN in text and resolve its region. None if absent/invalid."""
+    """Validate a PIN and compare its postal places with the supplied address.
+
+    Returns None when there is no PIN or the postal API confirms it does not exist.
+    A result with ``verified=False`` means the API was unavailable and only the old,
+    coarse two-digit prefix fallback could be used.
+    """
     m = PIN_RE.search(text or "")
     if not m:
         return None
     pin = m.group(1)
     if pin[0] == "0":  # Indian PINs never start with 0
         return None
-    region = pin_ranges().get(pin[:2])
-    if not region:
+
+    source = "local_department_of_posts_snapshot"
+    confidence = 1.0
+    try:
+        records = _fetch_local_post_offices(pin)
+    except PincodeDatabaseUnavailable:
+        records = ()
+
+    # A local hit never needs the network. A miss checks the API because a newly
+    # allocated PIN may not exist in an older snapshot.
+    if not records:
+        source = "department_of_posts_data_gov_in"
+        try:
+            records = _fetch_post_offices(pin)
+        except PincodeServiceUnavailable:
+            try:
+                records = _fetch_secondary_post_offices(pin)
+                source = "postalpincode_in_fallback"
+                confidence = 0.95
+            except PincodeServiceUnavailable:
+                return _fallback_pincode(pin)
+    if not records:  # The API responded successfully and found no such PIN.
         return None
-    return {"pincode": pin, "state": region}
+
+    address = _normalise_place(text, pin)
+    field_weights = {
+        "officename": 1.0,
+        "district": 0.95,
+        "divisionname": 0.85,
+        "statename": 0.80,
+        "circlename": 0.75,
+    }
+    best_score = 0.0
+    best_record: dict | None = None
+    best_field: str | None = None
+    best_place: str | None = None
+    best_candidate_length = 0
+
+    for record in records:
+        for field, weight in field_weights.items():
+            raw_place = str(record.get(field) or "")
+            candidate = _normalise_place(raw_place)
+            # Directory suffixes do not form part of a place as people say it.
+            candidate = re.sub(r"\b(?:circle|division|gpo|ho|so|bo|po)$", "", candidate).strip()
+            score = _place_score(address, candidate) * weight
+            # Prefer a more specific place when two exact fields both match, e.g.
+            # "Connaught Place" over the more general "New Delhi".
+            if score > best_score or (
+                score == best_score and len(candidate) > best_candidate_length
+            ):
+                best_score = score
+                best_record = record
+                best_field = field
+                best_place = raw_place
+                best_candidate_length = len(candidate)
+
+    states = sorted({
+        _display_place(str(record.get("statename") or ""))
+        for record in records if record.get("statename")
+    })
+    districts = sorted({
+        _display_place(str(record.get("district") or ""))
+        for record in records if record.get("district")
+    })
+    post_offices = sorted({
+        _display_place(str(record.get("officename") or ""))
+        for record in records if record.get("officename")
+    })
+
+    # Prefer the district attached to the best local match. For a state-only match,
+    # selecting one district from a multi-district PIN would imply false precision.
+    district = None
+    if best_record is not None and best_field in {"officename", "district", "divisionname"}:
+        district = _display_place(str(best_record.get("district") or "")) or None
+    elif len(districts) == 1:
+        district = districts[0]
+
+    has_place_text = bool(address)
+    place_match = None if not has_place_text else best_score >= PINCODE_MATCH_THRESHOLD
+    return {
+        "pincode": pin,
+        "state": states[0] if states else None,
+        "district": district,
+        "districts": districts,
+        "post_offices": post_offices,
+        "place_match": place_match,
+        "place_match_score": round(best_score, 3),
+        "match_field": best_field if place_match else None,
+        "matched_place": _display_place(best_place or "") if place_match else None,
+        "verified": True,
+        "confidence": confidence,
+        "source": source,
+    }
 
 
 # ------------------------------------------------------------ phone normalisation
@@ -145,6 +602,86 @@ def normalise_phone(raw: str) -> str:
     return raw
 
 
+# ---------------------------------------------------------- email normalisation
+
+EMAIL_RE = re.compile(r"^[a-z0-9!#$%&'*+/=?^_`{|}~.-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+$")
+
+# Spoken punctuation, longest first so "dot com" is not eaten by "dot".
+_SPOKEN_EMAIL = (
+    (r"\bat\s+the\s+rate\s+(?:of\s+)?\b", "@"),
+    (r"\b(?:at|attherate)\b", "@"),
+    (r"\b(?:dot|full\s*stop|point)\b", "."),
+    (r"\b(?:underscore|under\s*score)\b", "_"),
+    (r"\b(?:hyphen|dash|minus)\b", "-"),
+    (r"\bplus\b", "+"),
+)
+
+# Providers speech recognition reliably splits or mangles. Applied after the spoken
+# punctuation pass, so "gee mail dot com" has already become "gee mail.com".
+_DOMAIN_FIXES = (
+    (r"\bg\s*(?:ee|e)?\s*mail\b", "gmail"),
+    (r"\bgoogle\s*mail\b", "gmail"),
+    (r"\b(?:yaho+|ya\s*hoo)\b", "yahoo"),
+    (r"\bhot\s*mail\b", "hotmail"),
+    (r"\bout\s*look\b", "outlook"),
+    (r"\brediff\s*mail\b", "rediffmail"),
+    (r"\bproton\s*mail\b", "protonmail"),
+    (r"\bi\s*cloud\b", "icloud"),
+)
+
+
+# A model can emit a *syntactically valid* address that still has the spoken word baked
+# in: "rahul_underscore_verma@outlook.com", "aditya.dot.p@gee.mail.com". Only fully
+# delimited occurrences are replaced, so real names keep substrings like the "at" in
+# "nathan" or the "dot" in "dotto".
+_LEAKED_TOKENS = (
+    (r"(?<=[._-])underscore(?=[._-])", "_"),
+    (r"(?<=[._-])dot(?=[._-])", "."),
+    (r"(?<=[._-])(?:dash|hyphen)(?=[._-])", "-"),
+    (r"(?<=@)ge{1,2}\.?mail(?=\.)", "gmail"),
+    (r"(?<=@)hot\.mail(?=\.)", "hotmail"),
+    (r"(?<=@)out\.look(?=\.)", "outlook"),
+    (r"(?<=@)i\.cloud(?=\.)", "icloud"),
+)
+
+
+def _repair_leaked_tokens(address: str) -> str:
+    for pattern, symbol in _LEAKED_TOKENS:
+        address = re.sub(pattern, symbol, address)
+    return re.sub(r"([._-])\1+", r"\1", address)
+
+
+def normalise_email(raw: str) -> str:
+    """Turn a spoken email address into a real one.
+
+    Every model tested garbles these differently - "rahul_underscore_verma@outlook.com",
+    "aditya.p@ gmail.com", "aditya.dot.p@gee.mail.com" - and unlike the institution or
+    PIN there is no directory to check the result against. So this is deliberately
+    conservative: it only returns a rewrite that is a syntactically valid address, and
+    otherwise hands back the original untouched rather than inventing one.
+    """
+    if not raw or not raw.strip():
+        return raw
+    text = raw.strip().lower()
+    if EMAIL_RE.match(text):
+        # Valid on its face, but may still spell out its own punctuation.
+        repaired = _repair_leaked_tokens(text)
+        return repaired if EMAIL_RE.match(repaired) else text
+
+    text = re.sub(r"\s*@\s*", " at ", text)   # normalise so one code path handles both
+    for pattern, symbol in _SPOKEN_EMAIL:
+        text = re.sub(pattern, f" {symbol} ", text)
+    for pattern, domain in _DOMAIN_FIXES:
+        text = re.sub(pattern, domain, text)
+
+    text = re.sub(r"\s*([@._+-])\s*", r"\1", text)   # drop spaces around punctuation
+    text = re.sub(r"\s+", "", text)                  # "gee mail" -> already fixed above
+    text = re.sub(r"\.{2,}", ".", text).strip(".")
+    text = _repair_leaked_tokens(text)
+
+    return text if EMAIL_RE.match(text) else raw
+
+
 # ------------------------------------------------------------------ entry point
 
 def apply_facts(profile: dict) -> dict:
@@ -154,6 +691,7 @@ def apply_facts(profile: dict) -> dict:
     candidate what was auto-fixed instead of silently rewriting their answers.
     """
     corrections = []
+    validation_warnings = list(profile.get("_validation_warnings", []))
 
     for edu in profile.get("education", []):
         original = edu.get("institution", "")
@@ -172,16 +710,63 @@ def apply_facts(profile: dict) -> dict:
         corrections.append({"field": "phone", "from": phone, "to": fixed_phone,
                             "confidence": 1.0})
 
+    email = profile.get("email", "")
+    fixed_email = normalise_email(email)
+    if fixed_email != email:
+        profile["email"] = fixed_email
+        corrections.append({"field": "email", "from": email, "to": fixed_email,
+                            "confidence": 1.0})
+    elif email.strip() and not EMAIL_RE.match(email.strip().lower()):
+        # Could not be repaired into a valid address. Say so rather than printing a
+        # broken email: there is no directory to verify a personal address against.
+        warning = {"field": "email", "code": "email_not_valid", "value": email}
+        if warning not in validation_warnings:
+            validation_warnings.append(warning)
+
     location = profile.get("location", "")
     pin = lookup_pincode(location)
-    if pin:
-        if pin["state"].split(" /")[0].lower() not in location.lower():
-            profile["location"] = f"{location.strip()}, {pin['state']}".strip(", ")
+    if pin and pin["verified"] and pin["place_match"] is False:
+        # The PIN itself is valid, but none of its post offices/district/state names
+        # matched the supplied place. Do not silently combine conflicting locations.
+        warning = {
+            "field": "location",
+            "code": "pincode_place_not_matched",
+            "value": location,
+            "pincode": pin["pincode"],
+            "expected_districts": pin["districts"],
+            "expected_state": pin["state"],
+            "source": pin["source"],
+        }
+        if warning not in validation_warnings:
+            validation_warnings.append(warning)
+    elif pin and pin["verified"]:
+        additions = []
+        location_norm = _normalise_place(location, pin["pincode"])
+
+        # Add a district only when a local office/district/division matched. A PIN
+        # with no place text, or only a state match, is not enough to choose one.
+        district = pin.get("district")
+        if (
+            district
+            and pin.get("match_field") in {"officename", "district", "divisionname"}
+            and _place_score(location_norm, _normalise_place(district)) < 0.86
+        ):
+            additions.append(district)
+
+        state = pin.get("state")
+        if state and _place_score(location_norm, _normalise_place(state)) < 0.86:
+            additions.append(state)
+
+        if additions:
+            profile["location"] = ", ".join([location.strip(), *additions]).strip(", ")
             corrections.append({
                 "field": "location", "from": location, "to": profile["location"],
-                "confidence": 1.0,
+                "confidence": pin["confidence"],
+                "source": pin["source"],
             })
 
     if corrections:
         profile["_corrections"] = corrections
+    if validation_warnings:
+        profile["_validation_warnings"] = validation_warnings
     return profile

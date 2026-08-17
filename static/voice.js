@@ -1,6 +1,6 @@
 // Shared voice engine: streaming mic capture + silence detection + TTS playback.
-
 // Every page loads this file, so keep one printer indicator at the bottom of the app.
+
 const printerStatusBar = document.createElement("div");
 printerStatusBar.className = "printer-status";
 printerStatusBar.setAttribute("role", "status");
@@ -155,4 +155,83 @@ async function speak(ttsPath, text, language = "en") {
   const audio = new Audio(URL.createObjectURL(blob));
   await audio.play();
   return new Promise(r => audio.onended = r);
+}
+
+// Play one WAV blob to completion. Playback errors are swallowed on purpose: a missing
+// clip should cost one sentence of audio, not abort the interview.
+function playBlob(blob) {
+  return new Promise(resolve => {
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    const finish = () => { URL.revokeObjectURL(url); resolve(); };
+    audio.onended = finish;
+    audio.onerror = finish;
+    audio.play().catch(finish);
+  });
+}
+
+function speakLocally(text, language) {
+  return new Promise(resolve => {
+    if (!("speechSynthesis" in window)) return resolve();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = language === "hi" ? "hi-IN" : "pa-IN";
+    const voices = window.speechSynthesis.getVoices();
+    const match = voices.find(v => v.lang.toLowerCase() === utterance.lang.toLowerCase())
+               || voices.find(v => v.lang.toLowerCase().startsWith(language));
+    if (match) utterance.voice = match;
+    utterance.onend = resolve;
+    utterance.onerror = () => resolve();
+    window.speechSynthesis.speak(utterance);
+  });
+}
+
+// Run one interview turn over the streaming socket, speaking each sentence the moment
+// it arrives instead of waiting for the whole reply to be generated and synthesized.
+//
+// Resolves with the same payload as POST /auto/turn, but only once every clip has
+// finished playing - returning earlier would open the microphone while the interviewer
+// is still talking and record its own voice. Rejects if the socket fails, so the caller
+// can fall back to the plain POST path.
+async function streamTurn(sessionId, answer, language = "en", onSentence = null) {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${proto}//${location.host}/auto/turn-stream`);
+  ws.binaryType = "blob";
+
+  let queue = Promise.resolve();          // serialises playback in arrival order
+
+  try {
+    return await new Promise((resolve, reject) => {
+      let result = null;
+      ws.onopen = () => ws.send(JSON.stringify({ session_id: sessionId, answer }));
+      ws.onerror = () => reject(new Error("Streaming turn failed"));
+      ws.onclose = () => {
+        if (result) queue.then(() => resolve(result));
+        else reject(new Error("Streaming turn closed early"));
+      };
+      ws.onmessage = event => {
+        if (event.data instanceof Blob) {          // WAV for the sentence just announced
+          queue = queue.then(() => playBlob(event.data));
+          return;
+        }
+        const msg = JSON.parse(event.data);
+        if (msg.type === "sentence") {
+          if (onSentence) onSentence(msg.text);
+          // Hindi and Punjabi never get a WAV frame - Kokoro is English-only, so the
+          // browser speaks those itself, still one sentence at a time.
+          if (language !== "en") {
+            const text = msg.text;
+            queue = queue.then(() => speakLocally(text, language));
+          }
+        } else if (msg.type === "done") {
+          result = msg;
+          ws.close();
+        } else if (msg.type === "error") {
+          reject(new Error(msg.detail || "Streaming turn failed"));
+          ws.close();
+        }
+      };
+    });
+  } finally {
+    if (ws.readyState === WebSocket.OPEN) ws.close();
+  }
 }

@@ -1,7 +1,6 @@
 """Small CUPS helpers shared by the UI status and automated printing flow."""
 import subprocess
 
-
 def _lpstat(*args: str) -> subprocess.CompletedProcess[str] | None:
     try:
         return subprocess.run(

@@ -222,7 +222,7 @@ def _progress(session: dict) -> dict:
     collected = sum(bool(field.get("value")) for field in session["fields"])
     return {"collected": collected, "total": total}
 
-
+#Printing Logic for the document
 def _print_pdf(path: Path) -> dict:
     printer = default_printer_status()
     if not printer["connected"]:
@@ -253,7 +253,7 @@ def _print_pdf(path: Path) -> dict:
         "print_error": error,
     }
 
-
+#save path defination
 def _result_for_path(path: Path, pdf_url: str) -> dict:
     return {
         "saved": True,

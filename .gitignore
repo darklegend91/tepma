@@ -1,6 +1,8 @@
 .venv/
 finetune/
 raw/
+logs/
+.DS_Store
 .claude/
 data/
 __pycache__/
