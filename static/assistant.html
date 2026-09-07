@@ -120,10 +120,24 @@ const SCRIPT = {
   askLanguage: {
     en: "Welcome to TePMA. Which language would you like to continue in? You can say English, Hindi, or Punjabi.",
     hi: "टेपमा में आपका स्वागत है। आप किस भाषा में बात करना चाहेंगे? अंग्रेज़ी, हिंदी, या पंजाबी।",
+    pa: "ਟੇਪਮਾ ਵਿੱਚ ਤੁਹਾਡਾ ਸਵਾਗਤ ਹੈ। ਤੁਸੀਂ ਕਿਸ ਭਾਸ਼ਾ ਵਿੱਚ ਗੱਲ ਕਰਨਾ ਚਾਹੋਗੇ? ਅੰਗਰੇਜ਼ੀ, ਹਿੰਦੀ, ਜਾਂ ਪੰਜਾਬੀ।",
   },
   languageUnclear: {
     en: "Sorry, I did not catch that. Please say English, Hindi, or Punjabi.",
     hi: "माफ़ कीजिए, मैं समझ नहीं पाया। कृपया कहिए अंग्रेज़ी, हिंदी, या पंजाबी।",
+    pa: "ਮਾਫ਼ ਕਰਨਾ, ਮੈਂ ਸਮਝ ਨਹੀਂ ਸਕਿਆ। ਕਿਰਪਾ ਕਰਕੇ ਕਹੋ ਅੰਗਰੇਜ਼ੀ, ਹਿੰਦੀ, ਜਾਂ ਪੰਜਾਬੀ।",
+  },
+  // Said once the resume exists. Two versions, because the kiosk only claims to have
+  // emailed the profile when the mail actually went out.
+  finishedEmailed: {
+    en: "Your online profile has been made and sent to your email. You can collect the printed resume from the printer. Thank you.",
+    hi: "आपका ऑनलाइन प्रोफ़ाइल बन गया है और आपके ईमेल पर भेज दिया गया है। छपा हुआ रिज़्यूमे आप प्रिंटर से ले सकते हैं। धन्यवाद।",
+    pa: "ਤੁਹਾਡੀ ਆਨਲਾਈਨ ਪ੍ਰੋਫ਼ਾਈਲ ਬਣ ਗਈ ਹੈ ਅਤੇ ਤੁਹਾਡੇ ਈਮੇਲ ਉੱਤੇ ਭੇਜ ਦਿੱਤੀ ਗਈ ਹੈ। ਛਪਿਆ ਹੋਇਆ ਰਿਜ਼ਿਊਮੇ ਤੁਸੀਂ ਪ੍ਰਿੰਟਰ ਤੋਂ ਲੈ ਸਕਦੇ ਹੋ। ਧੰਨਵਾਦ।",
+  },
+  finishedPrintOnly: {
+    en: "Your online profile has been made. You can collect the printed resume from the printer. Thank you.",
+    hi: "आपका ऑनलाइन प्रोफ़ाइल बन गया है। छपा हुआ रिज़्यूमे आप प्रिंटर से ले सकते हैं। धन्यवाद।",
+    pa: "ਤੁਹਾਡੀ ਆਨਲਾਈਨ ਪ੍ਰੋਫ਼ਾਈਲ ਬਣ ਗਈ ਹੈ। ਛਪਿਆ ਹੋਇਆ ਰਿਜ਼ਿਊਮੇ ਤੁਸੀਂ ਪ੍ਰਿੰਟਰ ਤੋਂ ਲੈ ਸਕਦੇ ਹੋ। ਧੰਨਵਾਦ।",
   },
   askIntent: {
     en: "How can I help you? Say résumé if you want me to build your résumé, or say document if you need a document.",
@@ -286,7 +300,7 @@ async function speakScript(key, language = state.language) {
 // everything twice, English then Hindi, because it has no idea who is standing there yet.
 function promptLines(key) {
   return key === "askLanguage" || key === "languageUnclear"
-    ? [{text: line(key, "en"), language: "en"}, {text: line(key, "hi"), language: "hi"}]
+    ? ["en", "hi", "pa"].map(language => ({text: line(key, language), language}))
     : [{text: line(key, state.language), language: state.language}];
 }
 
@@ -384,6 +398,9 @@ async function askIntent(again = false) {
 }
 
 // ---------- résumé branch ----------
+// The interview is a fixed sequence of sections decided by the server (name, contact,
+// role, education, experience, projects), followed by a pass that re-asks whatever the
+// draft profile is missing. The page just speaks, listens, and reports the answer back.
 async function runResume() {
   state.mode = "resume";
   ui.workflowTitle.textContent = "Résumé interview";
@@ -393,16 +410,16 @@ async function runResume() {
   setProgress(12, "Starting the résumé interview");
 
   status("Starting the interview…");
-  const start = await api("/auto/start", {language: state.language});
-  state.sessionId = start.session_id;
-  await speakLine(start.reply);
+  let turn = await api("/auto/start", {language: state.language});
+  state.sessionId = turn.session_id;
+  await speakLine(turn.reply);
 
-  while (state.running) {
+  while (state.running && !turn.done) {
     const answer = await hearAnswer();
     if (!answer) return;                 // abandoned mid-interview; transcript is saved
 
     status("Preparing the next question…");
-    let turn, spokenAlready = false;
+    let spokenAlready = false;
     try {
       // Streamed: each sentence is spoken as it is generated instead of after the whole
       // reply is written, which is the difference between ~4s and ~1.5s of silence.
@@ -419,17 +436,22 @@ async function runResume() {
     }
     checkRunning();
     if (!spokenAlready) await speakLine(turn.reply);
+    showInterviewProgress(turn);
 
-    const covered = (turn.covered || []).length;
-    setProgress(12 + (covered / 9) * 50, `Résumé interview: ${covered} of 9 sections`);
-    if (turn.done) break;
+    // Every section answered: find out what the draft profile is still missing, and ask.
+    if (turn.needs_gap_check) {
+      status("Checking what is still missing…");
+      turn = await api("/auto/gap-check", {session_id: state.sessionId});
+      checkRunning();
+      if (!turn.done) await speakLine(turn.reply);
+    }
   }
   checkRunning();
 
   setStep("Collect", "complete");
   setStep("Create", "active");
-  setProgress(68, "Building your résumé profile");
-  status("Building your résumé profile…");
+  setProgress(68, "Building your profile");
+  status("Building your profile…");
   const profile = await api("/auto/profile", {session_id: state.sessionId});
   setStep("Create", "complete");
   setStep("Save", "active");
@@ -437,9 +459,21 @@ async function runResume() {
   const files = await api("/auto/build-resume", {session_id: state.sessionId});
   setStep("Save", "complete");
   setStep("Print", "active");
-  setProgress(92, "Checking the printer");
-  const printing = await api("/auto/print", {session_id: state.sessionId});
-  presentResult({...profile, ...files, ...printing, title: "Your résumé"});
+  setProgress(92, "Emailing and printing");
+  const delivery = await api("/auto/print", {session_id: state.sessionId});
+  presentResult({...profile, ...files, ...delivery, title: "Your résumé"});
+  await speakScript(delivery.emailed ? "finishedEmailed" : "finishedPrintOnly");
+}
+
+function showInterviewProgress(turn) {
+  const total = turn.total || 6;
+  const done = Math.min(turn.collected || 0, total);
+  if (turn.phase === "gaps") {
+    setProgress(62, "Filling in anything that is missing");
+    status("Almost done.");
+  } else {
+    setProgress(12 + (done / total) * 50, `Interview: ${done} of ${total} sections`);
+  }
 }
 
 // ---------- document branch ----------

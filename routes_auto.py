@@ -10,6 +10,7 @@ written to disk every turn, so a refresh or crash never loses an interview.
 """
 import asyncio
 import json
+import re
 import subprocess
 import time
 import uuid
@@ -20,6 +21,7 @@ from fastapi.responses import FileResponse
 
 from engines import (TURN_MODEL, extract_partial_string, llm_extract, llm_stream,
                      split_sentences, synthesize_wav)
+import mailer
 from facts import apply_facts, date_context
 from printer_status import default_printer_status
 from profile_schema import EXTRACTOR_PROMPT, PROFILE_SCHEMA, romanize_profile
@@ -33,85 +35,109 @@ DATA_DIR = Path(__file__).parent / "data" / "sessions"
 MAX_TURNS = 22          # hard stop so a rambling interview always terminates
 LANGUAGES = {"en": "English", "hi": "Hindi", "pa": "Punjabi"}
 
-# Everything a resume needs. The server tracks which of these the candidate has answered
-# so the model cannot get stuck re-asking a question that was already answered - a real
-# failure mode when the LLM is left to infer coverage from the transcript alone.
-TOPICS = {
-    "name": "full name (ask them to spell it if unclear)",
-    "target_role": "the role or job they are targeting",
-    "education": "degree, college/university and year",
-    "experience": "work experience or internships, with numbers and impact",
-    "projects": "personal or academic projects",
-    "skills": "technical and professional skills",
-    "achievements": "awards, positions of responsibility or achievements",
-    "contact": "email address and 10-digit phone number",
-    "location": "city and 6-digit PIN code",
-}
+# The interview is a fixed script, asked in this order, because a resume has fields that
+# are simply not optional. Letting the model choose what to ask next - the previous design -
+# meant a candidate who rambled about projects could reach the end without a phone number.
+# The model still phrases each question, in the candidate's language; it never picks the topic.
+SECTIONS = [
+    ("identity", "their full name. Ask them to spell it out letter by letter if it is at "
+                 "all unclear."),
+    # One fact per section. A section that bundled the number and the email together made
+    # the model judge itself incomplete for whichever half it had not heard yet, and it
+    # spent the follow-ups re-asking instead of moving on.
+    ("phone", "their 10-digit mobile number. Ask them to say it digit by digit."),
+    ("email", "their email address. Ask them to spell it out letter by letter - people "
+              "dictate addresses rather than spelling them, and it is never heard correctly."),
+    ("target_role", "the job profile or role they want to apply for."),
+    ("education", "their education: highest qualification, the institution, and the year."),
+    ("experience", "their past work experience and their current job status - whether they "
+                   "are working, studying, or looking for work right now. Ask for numbers "
+                   "and impact where there is any."),
+    ("projects", "any projects, work samples or other proof of experience in their field."),
+]
+SECTION_IDS = [key for key, _ in SECTIONS]
 
-# session_id -> {"messages": [...], "turns": int, "dir": Path, "covered": set}
+# How many follow-ups one section may take before the interview moves on regardless. A
+# candidate who cannot produce an email address must not trap the kiosk on question two.
+# One is enough: anything genuinely missing is caught by the closing gap pass, which
+# judges the extracted profile rather than the interviewer's opinion of the conversation.
+MAX_FOLLOWUPS = 1
+# Cap on the closing gap-filling questions, so the interview always ends.
+MAX_GAP_QUESTIONS = 4
+
+# session_id -> {"messages", "turns", "dir", "index", "followups", "phase", "gaps", ...}
 _sessions: dict[str, dict] = {}
 
 # "reply" is deliberately first: constrained decoding emits properties in schema order,
 # so putting the spoken text first lets /auto/turn-stream start speaking a sentence while
-# the model is still choosing the "covered" topics. Reordering is safe because coverage
-# is handed to the model explicitly by _coverage_note() and only ever grows server-side.
+# the model is still deciding whether the section is finished.
 TURN_SCHEMA = {
     "type": "object",
     "properties": {
         "reply": {"type": "string"},
-        "covered": {
-            "type": "array",
-            "items": {"type": "string", "enum": list(TOPICS)},
-        },
     },
-    "required": ["reply", "covered"],
+    "required": ["reply"],
 }
 
 AUTO_PROMPT = """You are a friendly, professional resume interviewer on a voice call.
 
-You must return two things:
-1. "covered": the list of topics the candidate has NOW answered well enough for a resume, \
-judging from the whole conversation so far. Only include a topic once you genuinely have \
-the information; include every topic that has been answered, not just the newest one.
-2. "reply": what you say next, out loud.
+You are told which ONE thing to ask about next. Return "reply": what you say out loud -
+exactly one question about that one thing, and nothing else. You do not decide what comes
+next or when the interview ends; you are told that every turn.
 
 Rules for "reply":
 - Keep it SHORT (1-2 sentences) and natural to say aloud. Plain text only: no markdown, \
 no bullet points, no emoji.
-- Ask exactly ONE question, about the FIRST topic in the "still needed" list you are given.
-- NEVER re-ask something already answered. If the candidate already told you, move on.
+- Ask about the CURRENT item only. Never skip ahead to something you were not asked to \
+collect, and never re-ask something the candidate already answered.
 - Probe for specifics and numbers (team size, users, percentages, years) when vague.
-- Speech recognition garbles names, emails and colleges: ask them to spell the important ones.
-- The candidate may speak English, Hindi or Punjabi and may mix them. ALWAYS reply in the \
-language they are mainly using.
-- Candidates are in India: expect Indian colleges, cities and PIN codes.
-- When the "still needed" list is empty, do not ask anything: give a short thank-you \
-saying their resume is being prepared."""
+- Speech recognition garbles names, emails and colleges: ask them to spell those out.
+- Candidates are in India: expect Indian colleges, cities and PIN codes."""
 
 
-def _remaining(covered: set) -> list[str]:
-    return [t for t in TOPICS if t not in covered]
+def _needs(s: dict) -> tuple[str | None, str | None]:
+    """(what this turn must get, what comes after it) - (None, _) means the interview is over."""
+    if s["phase"] == "sections":
+        current = SECTIONS[s["index"]][1] if s["index"] < len(SECTIONS) else None
+        following = SECTIONS[s["index"] + 1][1] if s["index"] + 1 < len(SECTIONS) else None
+        return current, following
+    gaps = s["gaps"]
+    return (gaps[0] if gaps else None), (gaps[1] if len(gaps) > 1 else None)
 
 
-def _coverage_note(covered: set) -> str:
-    """Explicit state handed to the model each turn - this is what stops repeat questions.
+def _current_need(s: dict) -> str | None:
+    return _needs(s)[0]
 
-    Delivered as the last message rather than in the system prompt. It changes every turn,
-    and Ollama can only reuse its cached prefix up to the first token that differs - so
-    putting it in the prompt prefix forced the whole conversation to be re-processed each
-    turn, with prompt evaluation growing as the interview went on. At the end, everything
-    before it stays byte-identical and only this note is new.
 
-    The parenthesised form marks it as a director's aside rather than something the
-    candidate said, matching the "(The candidate has joined...)" convention in /auto/start.
+def _turn_note(s: dict) -> str:
+    """The per-turn stage direction. Kept out of the transcript - nobody said it.
+
+    It tells the model exactly one thing to ask. Whether the interview has moved on is the
+    server's decision alone: a 4B instruct model asked to judge "did they answer that?"
+    said no to plainly complete answers and re-asked them, which is the most irritating
+    thing a kiosk can do. Anything genuinely missing is caught later by the gap pass,
+    which reads the extracted profile instead of guessing from the conversation.
+
+    Delivered as the last message rather than in the system prompt because it changes every
+    turn, and Ollama can only reuse its cached prefix up to the first token that differs.
     """
-    remaining = _remaining(covered)
-    if not remaining:
-        return "(Interview status: everything is covered. Still needed: NOTHING - close the interview now.)"
+    current = _current_need(s)
+    if current is None:
+        return ("(Interview status: everything has been collected. Do not ask anything. "
+                "Give a short thank-you saying their profile is being prepared.)")
+    if s["followups"]:
+        return (f"(Interview status - not spoken by the candidate. The candidate did not "
+                f"answer the last question. Ask once more, in different words, about: "
+                f"{current}\nAsk nothing else.)")
+    if s["phase"] == "gaps":
+        return (f"(Interview status - not spoken by the candidate. The interview is over "
+                f"apart from one detail that was missing or not captured clearly: {current}"
+                f"\nAsk for exactly that, once, and nothing else.)")
+    collected = ", ".join(SECTION_IDS[:s["index"]]) or "nothing yet"
     return (f"(Interview status - not spoken by the candidate."
-            f"\nAlready covered: {', '.join(sorted(covered)) or 'nothing yet'}."
-            f"\nStill needed, in order: {'; '.join(f'{t} ({TOPICS[t]})' for t in remaining)}."
-            f"\nAsk about the FIRST item in that list, and never re-ask a covered topic.)")
+            f"\nAlready collected: {collected}. Do not ask about any of those again."
+            f"\nAsk them now about: {current}"
+            f"\nAsk that and nothing else.)")
 
 
 def _language_note(language: str) -> str:
@@ -163,20 +189,21 @@ async def auto_start(payload: dict):
     session_dir.mkdir(parents=True, exist_ok=True)
     messages = [{"role": "user", "content":
                  "(The candidate has joined the voice call. Greet them and begin the interview.)"}]
+    s = {"messages": messages, "turns": 0, "dir": session_dir, "language": language,
+         "index": 0, "followups": 0, "phase": "sections", "gaps": [], "gaps_asked": 0}
     result = await llm_extract(
-        messages + [{"role": "user", "content": _coverage_note(set())}],
+        messages + [{"role": "user", "content": _turn_note(s)}],
         AUTO_PROMPT + date_context() + _language_note(language),
         TURN_SCHEMA,
         model=TURN_MODEL,
     )
     reply = result["reply"].strip()
     messages.append({"role": "assistant", "content": reply})
-    s = {"messages": messages, "turns": 0, "dir": session_dir,
-         "covered": set(), "asked": next(iter(TOPICS)), "language": language}
     _sessions[session_id] = s
     _save(s)
     return {"session_id": session_id, "reply": reply, "done": False,
-            "language": language}
+            "language": language, "section": SECTION_IDS[0],
+            "collected": 0, "total": len(SECTIONS)}
 
 
 @router.post("/turn")
@@ -194,17 +221,27 @@ async def auto_turn(payload: dict):
 
 
 def _begin_turn(s: dict, answer: str):
-    """Record the candidate's answer and mark the topic we asked about as covered."""
+    """Record the answer and move the interview on, BEFORE the next question is generated.
+
+    Order matters: the question is written from the session's state, so if the state only
+    advanced afterwards every question would ask for the thing that was just answered.
+
+    Progression is mechanical - an answer with anything in it moves on, a refusal or a
+    blank buys MAX_FOLLOWUPS re-asks and then moves on regardless. That is what makes the
+    interview finite and its order fixed; what is genuinely missing is caught at the end
+    by the gap pass, which reads the extracted profile rather than guessing.
+    """
     s["messages"].append({"role": "user", "content": answer})
     s["turns"] += 1
 
-    # The topic we asked about last turn counts as covered once they answer it, whatever
-    # the model reports. Without this the interview can stall on a topic forever.
-    asked = s.get("asked")
-    if asked and _is_substantive(answer):
-        s["covered"].add(asked)
-    elif asked:
-        s["covered"].add(asked)  # they declined it - do not ask again either
+    if not (_is_substantive(answer) or s["followups"] >= MAX_FOLLOWUPS):
+        s["followups"] += 1
+        return
+    s["followups"] = 0
+    if s["phase"] == "sections" and s["index"] < len(SECTIONS):
+        s["index"] += 1
+    elif s["phase"] == "gaps" and s["gaps"]:
+        s["gaps"].pop(0)
 
 
 def _turn_system(s: dict) -> str:
@@ -218,30 +255,119 @@ def _turn_messages(s: dict) -> list[dict]:
     The note must not go into s["messages"]: that is the saved transcript, and the
     extraction pass reads it back to build the resume.
     """
-    return s["messages"] + [{"role": "user", "content": _coverage_note(s["covered"])}]
+    return s["messages"] + [{"role": "user", "content": _turn_note(s)}]
 
 
 def _finish_turn(s: dict, result: dict) -> dict:
-    """Apply a completed turn result to the session and build the client payload."""
-    # coverage only ever grows: a later turn must not "un-answer" an earlier topic
-    s["covered"].update(t for t in result.get("covered", []) if t in TOPICS)
+    """Record the question that was just asked and report where the interview stands."""
     reply = (result.get("reply") or "").strip()
-    remaining = _remaining(s["covered"])
-    s["asked"] = remaining[0] if remaining else None
-
-    done = not remaining or s["turns"] >= MAX_TURNS
+    done = (s["phase"] == "gaps" and _current_need(s) is None) or s["turns"] >= MAX_TURNS
     if done:
-        reply = reply or "Thank you, that is everything I need. Your resume is being prepared now."
+        reply = reply or "Thank you, that is everything I need. Your profile is being prepared now."
 
     s["messages"].append({"role": "assistant", "content": reply})
     _save(s)
+    collected = s["index"] if s["phase"] == "sections" else len(SECTIONS)
     return {
         "reply": reply,
         "done": done,
         "turns": s["turns"],
-        "covered": sorted(s["covered"]),
-        "remaining": remaining,
+        "phase": s["phase"],
+        "section": (SECTION_IDS[s["index"]] if s["phase"] == "sections"
+                    and s["index"] < len(SECTIONS) else "gaps"),
+        "collected": collected,
+        "total": len(SECTIONS),
+        "needs_gap_check": s["phase"] == "sections" and s["index"] >= len(SECTIONS),
     }
+
+
+# What "recorded with confidence" means, field by field. These are deliberately mechanical:
+# a spoken email that never reached an "@" or a phone that lost digits is exactly the kind
+# of thing the candidate should be given one more chance to correct before printing.
+def _said_by_candidate(s: dict) -> str:
+    """Everything the candidate actually said this session, lower-cased."""
+    return " ".join(m["content"] for m in s["messages"]
+                    if m["role"] == "user" and not m["content"].startswith("(")).lower()
+
+
+def _profile_gaps(profile: dict) -> list[str]:
+    gaps = []
+    name = (profile.get("name") or "").strip()
+    if len(name.split()) < 2:
+        gaps.append("their full name, first and last, spelled out letter by letter.")
+    email = (profile.get("email") or "").strip()
+    if "@" not in email or "." not in email.split("@")[-1]:
+        gaps.append("their email address, spelled out letter by letter.")
+    digits = "".join(c for c in (profile.get("phone") or "") if c.isdigit())
+    if len(digits) not in (10, 12):     # 10 digits, or 12 with the 91 country code
+        gaps.append("their 10-digit mobile number, digit by digit.")
+    if not (profile.get("target_role") or "").strip():
+        gaps.append("the job profile or role they are applying for.")
+    if not profile.get("education"):
+        gaps.append("their highest qualification, the institution and the year.")
+    if not profile.get("experience") and not profile.get("projects"):
+        gaps.append("their work experience, current job status, or any project they can show.")
+    if not profile.get("skills"):
+        gaps.append("the main skills they would want on their resume.")
+    # A PIN is the test, not a non-empty string: asked for a location it never heard, the
+    # extractor will happily infer a plausible city from the college name. A 6-digit PIN
+    # is something only the candidate can supply, and facts.py validates it against the
+    # postal directory afterwards.
+    location = (profile.get("location") or "").strip()
+    if not re.search(r"\b\d{6}\b", location):
+        gaps.append("the city they live in, and its 6-digit PIN code.")
+    return gaps[:MAX_GAP_QUESTIONS]
+
+
+async def enter_gap_phase(s: dict) -> dict:
+    """After the fixed sections: extract a draft profile and queue what is still missing.
+
+    This is the "anything we missed" pass. It runs on a real extraction rather than on the
+    interviewer's memory of the conversation, so what gets re-asked is what would actually
+    have been blank or malformed on the printed resume.
+    """
+    s["phase"] = "gaps"
+    s["followups"] = 0
+    try:
+        draft = await _build_profile(s)
+    except HTTPException:
+        gaps = []
+    else:
+        gaps = _profile_gaps(draft)
+
+    # The PIN code is asked here unless the candidate has already said one, and the test is
+    # their own words rather than the extracted profile: no section collects a location, and
+    # asked for one it never heard, the extractor infers a plausible city from the college
+    # name - it produced "Rajpura, 140401" on one pass and "Rajpura" on the next from the
+    # same transcript. A resume must not carry an address nobody gave.
+    pin_question = "the city they live in, and its 6-digit PIN code."
+    gaps = [gap for gap in gaps if gap != pin_question]
+    if not re.search(r"\b\d{6}\b", _said_by_candidate(s)):
+        gaps.insert(0, pin_question)
+    s["gaps"] = gaps[:MAX_GAP_QUESTIONS]
+    _save(s)
+    return {"gaps": len(s["gaps"]), "done": not s["gaps"]}
+
+
+@router.post("/gap-check")
+async def auto_gap_check(payload: dict):
+    """Close the interview: check the draft profile and ask about whatever is missing.
+
+    Called once, when a turn comes back with needs_gap_check. Returns the next question
+    the same shape a turn does, or done=true when nothing needs clarifying.
+    """
+    s = _session(payload.get("session_id", ""))
+    state = await enter_gap_phase(s)
+    if state["done"] or s["turns"] >= MAX_TURNS:
+        return {"reply": "", "done": True, "phase": "gaps", "section": "gaps",
+                "collected": len(SECTIONS), "total": len(SECTIONS), "gaps": 0}
+    result = await llm_extract(_turn_messages(s), _turn_system(s), TURN_SCHEMA,
+                               model=TURN_MODEL)
+    reply = (result.get("reply") or "").strip()
+    s["messages"].append({"role": "assistant", "content": reply})
+    _save(s)
+    return {"reply": reply, "done": False, "phase": "gaps", "section": "gaps",
+            "collected": len(SECTIONS), "total": len(SECTIONS), "gaps": len(s["gaps"])}
 
 
 async def _build_profile(s: dict) -> dict:
@@ -349,8 +475,28 @@ async def auto_build_resume(payload: dict):
 
 @router.post("/print")
 async def auto_print(payload: dict):
-    """Print the saved PDF only when the default printer is ready."""
-    return _print_saved_pdf(_session(payload.get("session_id", "")))
+    """Deliver the finished resume: email it to the candidate, and print it.
+
+    Both are best-effort and reported separately, because the kiosk tells the candidate
+    what actually happened - promising "it has been emailed to you" when no mail server
+    is configured is worse than saying the print is the only copy.
+    """
+    s = _session(payload.get("session_id", ""))
+    result = _print_saved_pdf(s)
+
+    emailed, email_error, address = False, None, ""
+    profile_file = s["dir"] / "profile.json"
+    if profile_file.exists():
+        profile = json.loads(profile_file.read_text())
+        address = (profile.get("email") or "").strip()
+        try:
+            mailer.send_resume(address, profile.get("name", ""),
+                               s["dir"] / "resume.pdf", s["dir"] / "resume.docx")
+            emailed = True
+        except RuntimeError as exc:
+            email_error = str(exc)
+    return {**result, "emailed": emailed, "email_error": email_error,
+            "email_to": address if emailed else ""}
 
 
 @router.post("/finish")
@@ -394,7 +540,8 @@ async def auto_speak(payload: dict):
     text = (payload.get("text") or "").strip()
     if not text:
         raise HTTPException(400, "No text provided")
-    return Response(content=synthesize_wav(text), media_type="audio/wav")
+    audio = await asyncio.to_thread(synthesize_wav, text)   # blocking, CPU-bound
+    return Response(content=audio, media_type="audio/wav")
 
 
 async def turn_stream_socket(ws: WebSocket):

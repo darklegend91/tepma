@@ -4,6 +4,7 @@ The resume branch intentionally reuses /auto. This router owns only the document
 stored-document selection, guided application details, deterministic rendering, and safe
 best-effort printing.
 """
+import asyncio
 import json
 import re
 import subprocess
@@ -514,7 +515,10 @@ async def assistant_speak(payload: dict):
     text = str(payload.get("text", "")).strip()
     if not text:
         raise HTTPException(400, "No text provided")
-    return Response(content=synthesize_wav(text), media_type="audio/wav")
+    # Kokoro is blocking and CPU-bound, and loading it the first time takes tens of
+    # seconds - on the event loop that freezes every other request in the kiosk.
+    audio = await asyncio.to_thread(synthesize_wav, text)
+    return Response(content=audio, media_type="audio/wav")
 
 
 router.add_api_websocket_route("/listen", live_transcribe_socket)
