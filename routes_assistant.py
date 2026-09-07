@@ -467,6 +467,48 @@ async def generated_document(filename: str):
     )
 
 
+CHOICE_PROMPT = """The user is speaking to a hands-free kiosk that can either interview \
+them to build a resume, or find and print a document. Decide what their words mean.
+
+- "resume": they want a resume, CV or biodata made.
+- "document": they want a document, application, letter, form or certificate.
+- "stop": they are finished, want nothing more, or want to end the session.
+- "unclear": their words indicate none of the above.
+
+The words come from speech recognition, may be garbled, and may be English, Hindi or \
+Punjabi."""
+
+CHOICE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "choice": {"type": "string", "enum": ["resume", "document", "stop", "unclear"]},
+    },
+    "required": ["choice"],
+}
+
+
+@router.post("/choice")
+async def assistant_choice(payload: dict):
+    """Classify a spoken resume-or-document answer.
+
+    The page matches the obvious words itself; this is the fallback for free-form answers
+    like "I need to get a paper printed". Any failure is reported as "unclear" so the
+    kiosk simply asks again - an unreachable model must never end a session.
+    """
+    said = str(payload.get("text", "")).strip()
+    if not said:
+        return {"choice": "unclear"}
+    try:
+        result = await llm_extract(
+            [{"role": "user", "content": f'The user said: "{said}"'}],
+            CHOICE_PROMPT,
+            CHOICE_SCHEMA,
+        )
+    except Exception:
+        return {"choice": "unclear"}
+    return {"choice": result.get("choice", "unclear")}
+
+
 @router.post("/speak")
 async def assistant_speak(payload: dict):
     text = str(payload.get("text", "")).strip()

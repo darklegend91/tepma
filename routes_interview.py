@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, Response
 
 from engines import llm_chat, llm_extract, synthesize_wav
 from facts import apply_facts, date_context
-from profile_schema import EXTRACTOR_PROMPT, PROFILE_SCHEMA
+from profile_schema import EXTRACTOR_PROMPT, PROFILE_SCHEMA, romanize_profile
 from resume_docx import render_resume_docx
 from resume_pdf import render_resume
 from ws_stt import live_transcribe_socket
@@ -83,6 +83,9 @@ async def interview_finish(payload: dict):
     )
     # Deterministic corrections. PIN validation hits SQLite and may fall back to a live
     # postal-directory request, so keep it off the event loop exactly as /auto does.
+    # Before the facts layer, never after: the institution matcher and PIN lookup
+    # are Latin-only and silently miss anything still written in Devanagari.
+    profile = await romanize_profile(profile)
     profile = await asyncio.to_thread(apply_facts, profile)
 
     session_id = time.strftime("%Y%m%d-%H%M%S")

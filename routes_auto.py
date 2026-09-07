@@ -22,7 +22,7 @@ from engines import (TURN_MODEL, extract_partial_string, llm_extract, llm_stream
                      split_sentences, synthesize_wav)
 from facts import apply_facts, date_context
 from printer_status import default_printer_status
-from profile_schema import EXTRACTOR_PROMPT, PROFILE_SCHEMA
+from profile_schema import EXTRACTOR_PROMPT, PROFILE_SCHEMA, romanize_profile
 from resume_docx import render_resume_docx
 from resume_pdf import render_resume
 from ws_stt import live_transcribe_socket
@@ -263,6 +263,9 @@ async def _build_profile(s: dict) -> dict:
         raise HTTPException(500, f"Could not build the profile: {e}")
     # PIN validation performs a live postal-directory request; keep it off the
     # FastAPI event loop so other sessions remain responsive.
+    # Before the facts layer, never after: the institution matcher and PIN lookup
+    # are Latin-only and silently miss anything still written in Devanagari.
+    profile = await romanize_profile(profile)
     profile = await asyncio.to_thread(apply_facts, profile)
     session_dir = s["dir"]
     (session_dir / "profile.json").write_text(json.dumps(profile, indent=2, ensure_ascii=False))

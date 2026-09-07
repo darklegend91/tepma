@@ -15,20 +15,18 @@
   .hero h2 { color:inherit; opacity:1; text-transform:none; letter-spacing:0;
              font-size:1.35rem; margin-bottom:.45rem; }
   .hero p { margin:.2rem 0 1.2rem; opacity:.72; line-height:1.5; }
-  .language-row { display:flex; align-items:center; gap:.65rem; margin-bottom:1rem; }
-  .language-row select { min-width:170px; }
-  .choices { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.85rem; }
-  .choice { text-align:left; border:1px solid color-mix(in srgb,currentColor 14%,transparent);
-            color:inherit; background:color-mix(in srgb,Canvas 88%,transparent);
-            padding:1.15rem; min-height:126px; transition:transform .15s,border-color .15s; }
-  .choice:hover { transform:translateY(-2px); border-color:#4f46e5; }
-  .choice strong { display:block; font-size:1.08rem; margin:.35rem 0; }
-  .choice span { display:block; font-size:.86rem; opacity:.7; line-height:1.4; }
-  .choice-icon { font-size:1.65rem; }
+  /* The one unavoidable tap: browsers refuse microphone access and audio playback until
+     the page has been interacted with once. Everything after this is spoken. */
+  #begin { position:fixed; inset:0; z-index:60; display:flex; flex-direction:column;
+           gap:.7rem; align-items:center; justify-content:center; text-align:center;
+           padding:2rem; cursor:pointer;
+           background:linear-gradient(145deg, color-mix(in srgb,#4f46e5 22%,Canvas),
+                                              color-mix(in srgb,#0ea5e9 12%,Canvas)); }
+  #begin .mark { font-size:3rem; }
+  #begin .big { font-size:1.9rem; font-weight:600; }
+  #begin .small { opacity:.7; max-width:34ch; line-height:1.5; }
   .workflow-head { display:flex; justify-content:space-between; align-items:center; gap:1rem; }
   .workflow-head h2 { margin:0; }
-  .ghost { color:inherit; background:transparent;
-           border:1px solid color-mix(in srgb,currentColor 25%,transparent); }
   .steps { display:flex; gap:.4rem; flex-wrap:wrap; margin:.9rem 0 .55rem; }
   .step { font-size:.74rem; padding:.25rem .58rem; border-radius:999px;
           border:1px solid color-mix(in srgb,currentColor 22%,transparent); opacity:.45; }
@@ -42,84 +40,56 @@
                   transition:width .3s ease; }
   #progressLabel { margin-top:.35rem; font-size:.78rem; opacity:.68; }
   #chatLog { min-height:150px; max-height:48vh; }
-  .composer { margin-top:1rem; display:grid; grid-template-columns:1fr auto; gap:.65rem; }
-  .composer textarea { min-height:52px; resize:vertical; }
-  .composer-actions { display:flex; gap:.5rem; align-items:stretch; }
-  #micBtn { padding:.65rem .85rem; }
-  #stopBtn { background:#dc2626; grid-column:1/-1; justify-self:start; }
-  .meter-wide { grid-column:1/-1; width:100%; height:7px; border-radius:99px;
+  /* Live transcript: what has been recognised so far, dimmed until it is submitted. */
+  #hearing { margin-top:.9rem; min-height:2.6em; font-size:1.05rem; line-height:1.5;
+             padding:.7rem .85rem; border-radius:10px;
+             background:color-mix(in srgb,currentColor 7%,transparent); opacity:.75; }
+  #hearing:empty { display:none; }
+  .meter-wide { width:100%; height:7px; border-radius:99px; margin-top:.7rem;
                 overflow:hidden; background:color-mix(in srgb,currentColor 12%,transparent); }
-  .meter-wide div { width:0;height:100%;background:#22c55e; }
+  .meter-wide div { width:0;height:100%;background:#22c55e;transition:width 80ms linear; }
+  #stopBtn { margin-top:1rem; background:#dc2626; }
   .result-actions { display:flex; flex-wrap:wrap; gap:.6rem; margin-top:.8rem; }
   .success-box { padding:.85rem; border-radius:10px;
                  background:color-mix(in srgb,#22c55e 11%,transparent); line-height:1.5; }
   .warning-box { padding:.85rem; border-radius:10px;
                  background:color-mix(in srgb,#f59e0b 12%,transparent); line-height:1.5; }
-  @media (max-width:580px) {
-    .choices { grid-template-columns:1fr; }
-    .composer { grid-template-columns:1fr; }
-    .composer-actions { grid-column:1; }
-  }
 </style>
 </head>
 <body>
+  <div id="begin">
+    <div class="mark">🎙️</div>
+    <div class="big">TePMA Assistant</div>
+    <div class="small">Tap anywhere to begin, then just talk. I will greet you, ask which
+      language you prefer, and ask whether you want a résumé or a document.</div>
+    <div class="small">छूकर शुरू करें · ਛੂਹ ਕੇ ਸ਼ੁਰੂ ਕਰੋ</div>
+  </div>
+
   <h1>TePMA Assistant</h1>
   <nav><a href="/">Resume interview</a> &nbsp;|&nbsp; <a href="/docs-assistant">Document library</a> &nbsp;|&nbsp; <a href="/test">Voice test</a></nav>
 
-  <section class="card hero" id="choiceCard">
-    <h2>What would you like to create?</h2>
-    <p>I can find or generate a document, or interview you section-by-section for a complete résumé.</p>
-    <label class="language-row" for="languageSelect">
-      Conversation language
-      <select id="languageSelect">
-        <option value="en">English</option>
-        <option value="hi">हिन्दी (Hindi)</option>
-        <option value="pa">ਪੰਜਾਬੀ (Punjabi)</option>
-      </select>
-    </label>
-    <div class="choices">
-      <button class="choice" id="documentChoice" type="button">
-        <span class="choice-icon">📄</span>
-        <strong>I want a document</strong>
-        <span>Describe it. I’ll find the best stored PDF or collect details and generate an application.</span>
-      </button>
-      <button class="choice" id="resumeChoice" type="button">
-        <span class="choice-icon">🧑‍💼</span>
-        <strong>I want a résumé</strong>
-        <span>I’ll interview you about contact details, role, education, experience, projects, skills and achievements.</span>
-      </button>
-    </div>
-  </section>
-
-  <section class="card" id="workflowCard" hidden>
+  <section class="card" id="workflowCard">
     <div class="workflow-head">
       <h2 id="workflowTitle">Assistant</h2>
-      <button class="ghost" id="restartBtn" type="button">Start over</button>
     </div>
     <div class="steps">
-      <span class="step active" id="stepChoose">Choose</span>
+      <span class="step" id="stepChoose">Choose</span>
       <span class="step" id="stepCollect">Collect details</span>
       <span class="step" id="stepCreate">Find / create</span>
       <span class="step" id="stepSave">Save PDF</span>
       <span class="step" id="stepPrint">Print</span>
     </div>
     <div class="progress" role="progressbar" aria-label="Workflow progress"
-         aria-valuemin="0" aria-valuemax="100" aria-valuenow="5" id="progressTrack">
+         aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progressTrack">
       <div id="progressFill"></div>
     </div>
-    <div id="progressLabel">Choice selected — 5%</div>
+    <div id="progressLabel">Waiting to start — 0%</div>
 
     <div id="chatLog" aria-live="polite"></div>
-    <div class="composer" id="composer">
-      <textarea id="answerInput" placeholder="Type your answer here…"></textarea>
-      <div class="composer-actions">
-        <button class="ghost" id="micBtn" type="button" title="Answer by voice">🎙️</button>
-        <button id="sendBtn" type="button">Send</button>
-      </div>
-      <button id="stopBtn" type="button" hidden>Stop listening &amp; send answer</button>
-      <div class="meter-wide"><div id="meterFill"></div></div>
-    </div>
-    <div class="status" id="statusText">Ready for your answer.</div>
+    <div id="hearing" aria-live="polite"></div>
+    <div class="meter-wide"><div id="meterFill"></div></div>
+    <div class="status" id="statusText">Tap the screen to begin.</div>
+    <button id="stopBtn" type="button" hidden>Stop</button>
   </section>
 
   <section class="card" id="resultCard" hidden>
@@ -128,7 +98,6 @@
     <div class="result-actions">
       <a id="pdfLink" target="_blank"><button type="button">Open PDF</button></a>
       <a id="docxLink"><button class="ghost" type="button">Download Word</button></a>
-      <button class="ghost" id="printAgainBtn" type="button">Print again</button>
     </div>
   </section>
 
@@ -136,33 +105,123 @@
 <script>
 const el = id => document.getElementById(id);
 const ui = Object.fromEntries([
-  "choiceCard","languageSelect","documentChoice","resumeChoice","workflowCard",
-  "workflowTitle","restartBtn","stepChoose","stepCollect","stepCreate","stepSave",
-  "stepPrint","progressTrack","progressFill","progressLabel","chatLog","composer",
-  "answerInput","micBtn","sendBtn","stopBtn","meterFill","statusText","resultCard",
-  "resultSummary","pdfLink","docxLink","printAgainBtn"
+  "begin","workflowCard","workflowTitle","stepChoose","stepCollect","stepCreate",
+  "stepSave","stepPrint","progressTrack","progressFill","progressLabel","chatLog",
+  "hearing","meterFill","statusText","stopBtn","resultCard","resultSummary",
+  "pdfLink","docxLink"
 ].map(id => [id, el(id)]));
 
-const text = {
-  documentPrompt: {
-    en: "Tell me what document you need. I will search the library first, and if a suitable application is missing, I will collect the details to create it.",
-    hi: "बताइए आपको कौन-सा दस्तावेज़ चाहिए। मैं पहले लाइब्रेरी में खोजूँगा, और आवेदन न मिलने पर उसे बनाने के लिए ज़रूरी जानकारी पूछूँगा।",
-    pa: "ਦੱਸੋ ਤੁਹਾਨੂੰ ਕਿਹੜਾ ਦਸਤਾਵੇਜ਼ ਚਾਹੀਦਾ ਹੈ। ਮੈਂ ਪਹਿਲਾਂ ਲਾਇਬ੍ਰੇਰੀ ਵਿੱਚ ਲੱਭਾਂਗਾ ਅਤੇ ਅਰਜ਼ੀ ਨਾ ਮਿਲਣ ਤੇ ਉਸਨੂੰ ਬਣਾਉਣ ਲਈ ਲੋੜੀਂਦੀ ਜਾਣਕਾਰੀ ਪੁੱਛਾਂਗਾ।"
+// ---------------------------------------------------------------------------
+// Everything the assistant says outside the interview itself is scripted, not
+// generated: these lines must come out identical every session, and a local model
+// paraphrasing "say résumé or document" is how a kiosk becomes unusable.
+// ---------------------------------------------------------------------------
+const SCRIPT = {
+  askLanguage: {
+    en: "Welcome to TePMA. Which language would you like to continue in? You can say English, Hindi, or Punjabi.",
+    hi: "टेपमा में आपका स्वागत है। आप किस भाषा में बात करना चाहेंगे? अंग्रेज़ी, हिंदी, या पंजाबी।",
   },
-  typeAnswer: {
-    en: "Type your answer here…", hi: "अपना उत्तर यहाँ लिखें…", pa: "ਆਪਣਾ ਜਵਾਬ ਇੱਥੇ ਲਿਖੋ…"
+  languageUnclear: {
+    en: "Sorry, I did not catch that. Please say English, Hindi, or Punjabi.",
+    hi: "माफ़ कीजिए, मैं समझ नहीं पाया। कृपया कहिए अंग्रेज़ी, हिंदी, या पंजाबी।",
+  },
+  askIntent: {
+    en: "How can I help you? Say résumé if you want me to build your résumé, or say document if you need a document.",
+    hi: "मैं आपकी कैसे मदद कर सकता हूँ? रिज़्यूमे बनवाने के लिए कहिए रिज़्यूमे, या कोई दस्तावेज़ चाहिए तो कहिए दस्तावेज़।",
+    pa: "ਮੈਂ ਤੁਹਾਡੀ ਕਿਵੇਂ ਮਦਦ ਕਰ ਸਕਦਾ ਹਾਂ? ਰਿਜ਼ਿਊਮੇ ਬਣਾਉਣ ਲਈ ਕਹੋ ਰਿਜ਼ਿਊਮੇ, ਜਾਂ ਕੋਈ ਦਸਤਾਵੇਜ਼ ਚਾਹੀਦਾ ਹੈ ਤਾਂ ਕਹੋ ਦਸਤਾਵੇਜ਼।",
+  },
+  intentUnclear: {
+    en: "Sorry, I did not understand. Please say résumé, or document.",
+    hi: "माफ़ कीजिए, मैं समझ नहीं पाया। कृपया कहिए रिज़्यूमे, या दस्तावेज़।",
+    pa: "ਮਾਫ਼ ਕਰਨਾ, ਮੈਂ ਸਮਝ ਨਹੀਂ ਸਕਿਆ। ਕਿਰਪਾ ਕਰਕੇ ਕਹੋ ਰਿਜ਼ਿਊਮੇ, ਜਾਂ ਦਸਤਾਵੇਜ਼।",
+  },
+  askDocument: {
+    en: "Tell me which document you need. I will look in the library first, and if it is not there I will collect the details and write it.",
+    hi: "बताइए आपको कौन-सा दस्तावेज़ चाहिए। मैं पहले लाइब्रेरी में देखूँगा, और न मिलने पर ज़रूरी जानकारी लेकर उसे तैयार करूँगा।",
+    pa: "ਦੱਸੋ ਤੁਹਾਨੂੰ ਕਿਹੜਾ ਦਸਤਾਵੇਜ਼ ਚਾਹੀਦਾ ਹੈ। ਮੈਂ ਪਹਿਲਾਂ ਲਾਇਬ੍ਰੇਰੀ ਵਿੱਚ ਦੇਖਾਂਗਾ, ਅਤੇ ਨਾ ਮਿਲਣ ਤੇ ਲੋੜੀਂਦੀ ਜਾਣਕਾਰੀ ਲੈ ਕੇ ਉਸਨੂੰ ਤਿਆਰ ਕਰਾਂਗਾ।",
+  },
+  notHeard: {
+    en: "Sorry, I did not hear anything. Please say that again.",
+    hi: "माफ़ कीजिए, मुझे कुछ सुनाई नहीं दिया। कृपया फिर से कहिए।",
+    pa: "ਮਾਫ਼ ਕਰਨਾ, ਮੈਨੂੰ ਕੁਝ ਸੁਣਾਈ ਨਹੀਂ ਦਿੱਤਾ। ਕਿਰਪਾ ਕਰਕੇ ਦੁਬਾਰਾ ਕਹੋ।",
+  },
+  ready: {
+    en: "Your document is ready.",
+    hi: "आपका दस्तावेज़ तैयार है।",
+    pa: "ਤੁਹਾਡਾ ਦਸਤਾਵੇਜ਼ ਤਿਆਰ ਹੈ।",
+  },
+  anythingElse: {
+    en: "Is there anything else? Say résumé, say document, or say stop to finish.",
+    hi: "कुछ और चाहिए? कहिए रिज़्यूमे, कहिए दस्तावेज़, या समाप्त करने के लिए कहिए बंद।",
+    pa: "ਹੋਰ ਕੁਝ ਚਾਹੀਦਾ ਹੈ? ਕਹੋ ਰਿਜ਼ਿਊਮੇ, ਕਹੋ ਦਸਤਾਵੇਜ਼, ਜਾਂ ਖ਼ਤਮ ਕਰਨ ਲਈ ਕਹੋ ਬੰਦ।",
+  },
+  goodbye: {
+    en: "Thank you for using TePMA. Goodbye.",
+    hi: "टेपमा का उपयोग करने के लिए धन्यवाद। नमस्ते।",
+    pa: "ਟੇਪਮਾ ਵਰਤਣ ਲਈ ਧੰਨਵਾਦ। ਸਤ ਸ੍ਰੀ ਅਕਾਲ।",
+  },
+};
+
+// Language and intent are one-word answers, so they are matched here first: keyword
+// matching never mishears "résumé", costs nothing, and works while the model is loading.
+// The server classifier is only the fallback for free-form answers.
+const LANGUAGE_WORDS = {
+  en: ["english", "angrezi", "इंग्लिश", "अंग्रेज़ी", "अंग्रेजी", "ਅੰਗਰੇਜ਼ੀ"],
+  hi: ["hindi", "हिंदी", "हिन्दी", "ਹਿੰਦੀ"],
+  pa: ["punjabi", "panjabi", "पंजाबी", "ਪੰਜਾਬੀ"],
+};
+const INTENT_WORDS = {
+  resume: ["resume", "résumé", "resumé", "cv", "biodata", "bio data", "naukri",
+           "रिज़्यूमे", "रिज्यूमे", "बायोडाटा", "नौकरी", "ਰਿਜ਼ਿਊਮੇ", "ਬਾਇਓਡਾਟਾ", "ਨੌਕਰੀ"],
+  document: ["document", "documents", "certificate", "application", "letter", "form",
+             "paper", "print", "kagaz", "kaagaz", "arzi", "दस्तावेज़", "दस्तावेज", "कागज़",
+             "कागज", "आवेदन", "प्रार्थना", "फॉर्म", "प्रिंट", "ਦਸਤਾਵੇਜ਼", "ਕਾਗਜ਼", "ਅਰਜ਼ੀ", "ਫਾਰਮ", "ਪ੍ਰਿੰਟ"],
+  stop: ["stop", "nothing", "no thanks", "no thank", "goodbye", "bye", "exit", "quit",
+         "finish", "that's all", "thats all", "band karo", "bas", "kuch nahi",
+         "बंद", "बस", "कुछ नहीं", "अलविदा", "ਬੰਦ", "ਬੱਸ", "ਕੁਝ ਨਹੀਂ"],
+};
+
+const MAX_UNCLEAR = 3;          // after this, stop asking rather than loop forever
+const STOPPED = Symbol("stopped");
+
+let state = {running:false, language:"en", mode:null, sessionId:null, result:null};
+
+function line(key, language) { return SCRIPT[key][language] || SCRIPT[key].en; }
+
+// First keyword to appear wins, so "I want a résumé printed" is a résumé, not a print job.
+function matchWords(said, groups) {
+  const text = " " + said.toLowerCase() + " ";
+  let best = null, at = Infinity;
+  for (const [choice, words] of Object.entries(groups)) {
+    for (const word of words) {
+      const index = text.indexOf(word);
+      if (index >= 0 && index < at) { at = index; best = choice; }
+    }
   }
-};
+  return best;
+}
 
-let state = {
-  mode: null,
-  stage: "choice",
-  language: "en",
-  sessionId: null,
-  result: null,
-  busy: false,
-};
+function detectLanguage(said) {
+  const hit = matchWords(said, LANGUAGE_WORDS);
+  if (hit) return hit;
+  // No language named: fall back to the script Whisper transcribed it in.
+  if (/[ऀ-ॿ]/.test(said)) return "hi";
+  if (/[਀-੿]/.test(said)) return "pa";
+  return null;
+}
 
+async function detectIntent(said) {
+  const hit = matchWords(said, INTENT_WORDS);
+  if (hit) return hit;
+  try {
+    const data = await api("/assistant/api/choice", {text:said});
+    return data.choice;
+  } catch (_) {
+    return "unclear";           // a model hiccup must not end the session
+  }
+}
+
+// ---------- ui ----------
 function setProgress(percent, label) {
   const value = Math.max(0, Math.min(100, Math.round(percent)));
   ui.progressFill.style.width = value + "%";
@@ -177,14 +236,16 @@ function setStep(name, status) {
   node.classList.toggle("skipped", status === "skipped");
 }
 
-function addMessage(role, message, partial = false) {
+function addMessage(role, message) {
   const node = document.createElement("div");
-  node.className = `msg ${role}` + (partial ? " partial" : "");
+  node.className = `msg ${role}`;
   node.textContent = message;
   ui.chatLog.appendChild(node);
   ui.chatLog.scrollTop = ui.chatLog.scrollHeight;
   return node;
 }
+
+function status(message) { ui.statusText.textContent = message; }
 
 async function api(path, body) {
   const response = await fetch(path, {
@@ -197,165 +258,249 @@ async function api(path, body) {
   return data;
 }
 
-function setBusy(busy, label = "") {
-  state.busy = busy;
-  ui.answerInput.disabled = busy;
-  ui.sendBtn.disabled = busy;
-  ui.micBtn.disabled = busy;
-  if (label) ui.statusText.textContent = label;
-}
+// ---------- speaking and listening ----------
+function checkRunning() { if (!state.running) throw STOPPED; }
 
-async function speakReply(message) {
+async function speakLine(message, language = state.language) {
   if (!message) return;
-  try { await speak("/assistant/api/speak", message, state.language); }
-  catch (_) { /* The visible text remains usable when a voice is unavailable. */ }
+  addMessage("assistant", message);
+  status("Speaking…");
+  try {
+    // Bounded on purpose. Hindi and Punjabi are spoken by the browser's own voice, and a
+    // SpeechSynthesisUtterance whose voice is missing can fire neither onend nor onerror -
+    // an unattended kiosk would then wait for it forever. Reading aloud runs at roughly
+    // 12 characters a second, so this only trips when playback is genuinely stuck.
+    await Promise.race([
+      speak("/assistant/api/speak", message, language),
+      new Promise(resolve => setTimeout(resolve, 4000 + message.length * 90)),
+    ]);
+  } catch (_) { /* The text stays on screen when no voice is available. */ }
+  checkRunning();
 }
 
-function startMode(mode) {
-  state = {...state, mode, stage: mode === "document" ? "description" : "resume",
-           language: ui.languageSelect.value, sessionId:null, result:null};
-  ui.choiceCard.hidden = true;
-  ui.workflowCard.hidden = false;
+async function speakScript(key, language = state.language) {
+  await speakLine(line(key, language), language);
+}
+
+// Scripted prompts, as spoken lines. Before a language is chosen the assistant says
+// everything twice, English then Hindi, because it has no idea who is standing there yet.
+function promptLines(key) {
+  return key === "askLanguage" || key === "languageUnclear"
+    ? [{text: line(key, "en"), language: "en"}, {text: line(key, "hi"), language: "hi"}]
+    : [{text: line(key, state.language), language: state.language}];
+}
+
+// Listen for one spoken answer. Returns "" when nothing was heard, so callers decide
+// whether to re-ask - never advance the flow on silence.
+async function hear() {
+  checkRunning();
+  ui.hearing.textContent = "";
+  status("Listening… pause for a moment when you are done.");
+  const heard = await listen({
+    wsPath: "/assistant/api/listen",
+    language: state.language,
+    meterEl: ui.meterFill,
+    onPartial: value => { ui.hearing.textContent = value || ""; },
+    onStatus: value => status(value),
+  });
+  checkRunning();
+  ui.hearing.textContent = "";
+  if (heard) addMessage("user", heard);
+  return heard || "";
+}
+
+// Wait for an answer to a question that has already been asked, re-prompting on silence.
+// Returns null once the room has gone quiet MAX_UNCLEAR times in a row: a kiosk left
+// alone mid-interview has to give up and reset itself, not keep talking to nobody.
+async function hearAnswer() {
+  for (let attempt = 0; attempt < MAX_UNCLEAR; attempt++) {
+    const heard = await hear();
+    if (heard) return heard;
+    await speakScript("notHeard");
+  }
+  return null;
+}
+
+// Ask one scripted question until it is answered, or give up after MAX_UNCLEAR tries.
+async function askUntilUnderstood(questionKey, unclearKey, understand) {
+  for (const spoken of promptLines(questionKey)) await speakLine(spoken.text, spoken.language);
+  for (let attempt = 0; attempt < MAX_UNCLEAR; attempt++) {
+    const heard = await hear();
+    if (!heard) {
+      await speakScript("notHeard");
+      continue;
+    }
+    const understood = await understand(heard);
+    if (understood) return understood;
+    for (const spoken of promptLines(unclearKey)) await speakLine(spoken.text, spoken.language);
+  }
+  return null;
+}
+
+// ---------- the session ----------
+async function runSession() {
+  state = {running:true, language:"en", mode:null, sessionId:null, result:null};
+  ui.begin.hidden = true;
+  ui.stopBtn.hidden = false;
   ui.resultCard.hidden = true;
   ui.chatLog.innerHTML = "";
-  ui.answerInput.placeholder = text.typeAnswer[state.language];
+  ["Choose","Collect","Create","Save","Print"].forEach(name => setStep(name, ""));
+  setStep("Choose", "active");
+  setProgress(4, "Choosing a language");
+
+  try {
+    const language = await askUntilUnderstood("askLanguage", "languageUnclear",
+                                              heard => detectLanguage(heard));
+    state.language = language || "en";     // a broken microphone must not deadlock a kiosk
+    setProgress(8, "Choosing what to create");
+
+    let intent = await askIntent();
+    while (state.running && intent && intent !== "stop") {
+      if (intent === "resume") await runResume();
+      else await runDocument();
+      intent = await askIntent(true);
+    }
+    await speakScript("goodbye");
+    status("Finished.");
+  } catch (error) {
+    if (error !== STOPPED) {
+      status("Error: " + error.message);
+      addMessage("assistant", "I could not continue: " + error.message);
+    }
+  } finally {
+    state.running = false;
+    ui.stopBtn.hidden = true;
+    ui.hearing.textContent = "";
+    ui.begin.hidden = false;
+  }
+}
+
+async function askIntent(again = false) {
+  ui.workflowTitle.textContent = "Assistant";
+  const choice = await askUntilUnderstood(again ? "anythingElse" : "askIntent",
+                                          "intentUnclear",
+                                          async heard => await detectIntent(heard));
+  return choice === "unclear" ? null : choice;
+}
+
+// ---------- résumé branch ----------
+async function runResume() {
+  state.mode = "resume";
+  ui.workflowTitle.textContent = "Résumé interview";
+  ui.resultCard.hidden = true;
   setStep("Choose", "complete");
   setStep("Collect", "active");
-  setProgress(10, mode === "document" ? "Describe the document" : "Starting résumé interview");
-  if (mode === "document") {
-    ui.workflowTitle.textContent = "Document assistant";
-    const prompt = text.documentPrompt[state.language];
-    addMessage("assistant", prompt);
-    ui.answerInput.focus();
-    speakReply(prompt);
-  } else {
-    ui.workflowTitle.textContent = "Résumé interview";
-    startResume();
-  }
-}
+  setProgress(12, "Starting the résumé interview");
 
-async function startResume() {
-  setBusy(true, "Starting interview…");
-  try {
-    const data = await api("/auto/start", {language: state.language});
-    state.sessionId = data.session_id;
-    addMessage("assistant", data.reply);
-    setProgress(12, "Résumé interview: 0 of 9 sections");
-    ui.statusText.textContent = "Answer by typing or using the microphone.";
-    speakReply(data.reply);
-  } catch (error) {
-    showError(error);
-  } finally {
-    setBusy(false);
-  }
-}
+  status("Starting the interview…");
+  const start = await api("/auto/start", {language: state.language});
+  state.sessionId = start.session_id;
+  await speakLine(start.reply);
 
-async function submitAnswer() {
-  if (state.busy) return;
-  const answer = ui.answerInput.value.trim();
-  if (!answer) {
-    ui.statusText.textContent = "Please give an answer first.";
-    return;
-  }
-  ui.answerInput.value = "";
-  addMessage("user", answer);
-  setBusy(true, state.mode === "document" ? "Checking documents…" : "Preparing the next question…");
-  try {
-    if (state.mode === "document") await submitDocument(answer);
-    else await submitResume(answer);
-  } catch (error) {
-    showError(error);
-  } finally {
-    if (state.stage !== "complete") setBusy(false);
-  }
-}
+  while (state.running) {
+    const answer = await hearAnswer();
+    if (!answer) return;                 // abandoned mid-interview; transcript is saved
 
-async function submitDocument(answer) {
-  let data;
-  if (state.stage === "description") {
-    setStep("Create", "active");
-    setProgress(25, "Searching document library");
-    data = await api("/assistant/api/document/start", {
-      query: answer, language: state.language,
-    });
-    state.sessionId = data.session_id;
-  } else {
-    data = await api("/assistant/api/document/turn", {
-      session_id: state.sessionId, answer,
-    });
-  }
+    status("Preparing the next question…");
+    let turn, spokenAlready = false;
+    try {
+      // Streamed: each sentence is spoken as it is generated instead of after the whole
+      // reply is written, which is the difference between ~4s and ~1.5s of silence.
+      let bubble = null;
+      turn = await streamTurn(state.sessionId, answer, state.language, sentence => {
+        if (!bubble) { bubble = addMessage("assistant", sentence); status("Speaking…"); }
+        else bubble.textContent += " " + sentence;
+        ui.chatLog.scrollTop = ui.chatLog.scrollHeight;
+      });
+      spokenAlready = true;
+    } catch (_) {
+      // The socket is an optimisation, never a dependency.
+      turn = await api("/auto/turn", {session_id: state.sessionId, answer});
+    }
+    checkRunning();
+    if (!spokenAlready) await speakLine(turn.reply);
 
-  if (data.status === "matched") {
-    addMessage("assistant", data.reply);
-    setStep("Collect", "complete");
-    setStep("Create", "complete");
-    setStep("Save", "complete");
-    presentResult({...data, generated:false, title:data.document.title});
-    speakReply(data.reply);
-    return;
+    const covered = (turn.covered || []).length;
+    setProgress(12 + (covered / 9) * 50, `Résumé interview: ${covered} of 9 sections`);
+    if (turn.done) break;
   }
-  if (data.status === "unsupported") {
-    addMessage("assistant", data.reply);
-    setStep("Create", "skipped");
-    setProgress(100, "Request cannot be generated safely");
-    state.stage = "complete";
-    ui.composer.hidden = true;
-    ui.statusText.textContent = "Try another document request or start over.";
-    speakReply(data.reply);
-    return;
-  }
-  if (data.status === "completed") {
-    if (data.reply) addMessage("assistant", data.reply);
-    setStep("Collect", "complete");
-    setStep("Create", "complete");
-    setStep("Save", "complete");
-    presentResult(data.result);
-    speakReply(data.reply || "Your document is ready.");
-    return;
-  }
+  checkRunning();
 
-  state.stage = "document_fields";
-  addMessage("assistant", data.reply);
-  const ratio = data.total ? data.collected / data.total : 0;
-  setStep("Create", "");
-  setProgress(30 + ratio * 40, `Application details: ${data.collected} of ${data.total}`);
-  ui.statusText.textContent = "Answer the next detail, or type “skip” if it does not apply.";
-  speakReply(data.reply);
-}
-
-async function submitResume(answer) {
-  const data = await api("/auto/turn", {session_id:state.sessionId, answer});
-  addMessage("assistant", data.reply);
-  const count = (data.covered || []).length;
-  setProgress(12 + (count / 9) * 50, `Résumé interview: ${count} of 9 sections`);
-  if (!data.done) {
-    ui.statusText.textContent = "Answer the next question.";
-    speakReply(data.reply);
-    return;
-  }
-  await speakReply(data.reply);
-  await finishResume();
-}
-
-async function finishResume() {
-  state.stage = "finishing";
-  ui.composer.hidden = true;
   setStep("Collect", "complete");
   setStep("Create", "active");
-  setProgress(68, "Building résumé profile");
-  ui.statusText.textContent = "Building your résumé profile…";
-  const profile = await api("/auto/profile", {session_id:state.sessionId});
+  setProgress(68, "Building your résumé profile");
+  status("Building your résumé profile…");
+  const profile = await api("/auto/profile", {session_id: state.sessionId});
   setStep("Create", "complete");
   setStep("Save", "active");
   setProgress(80, "Creating PDF and Word files");
-  const files = await api("/auto/build-resume", {session_id:state.sessionId});
+  const files = await api("/auto/build-resume", {session_id: state.sessionId});
   setStep("Save", "complete");
   setStep("Print", "active");
-  setProgress(92, "Checking printer");
-  const printing = await api("/auto/print", {session_id:state.sessionId});
-  presentResult({...profile, ...files, ...printing, title:"Your résumé", generated:true});
+  setProgress(92, "Checking the printer");
+  const printing = await api("/auto/print", {session_id: state.sessionId});
+  presentResult({...profile, ...files, ...printing, title: "Your résumé"});
 }
 
+// ---------- document branch ----------
+async function runDocument() {
+  state.mode = "document";
+  ui.workflowTitle.textContent = "Document assistant";
+  ui.resultCard.hidden = true;
+  setStep("Choose", "complete");
+  setStep("Collect", "active");
+  setProgress(15, "Describing the document");
+
+  let data = null;
+  for (let attempt = 0; attempt < MAX_UNCLEAR && !data; attempt++) {
+    await speakScript("askDocument");
+    const request = await hear();
+    if (!request) continue;
+    setStep("Create", "active");
+    setProgress(25, "Searching the document library");
+    status("Searching the document library…");
+    data = await api("/assistant/api/document/start",
+                     {query: request, language: state.language});
+  }
+  if (!data) return;                      // nothing heard: fall through to "anything else?"
+  state.sessionId = data.session_id;
+
+  if (data.status === "matched") {
+    setStep("Collect", "complete");
+    setStep("Create", "complete");
+    setStep("Save", "complete");
+    await speakLine(data.reply);
+    presentResult({...data, title: data.document.title});
+    return;
+  }
+  if (data.status === "unsupported") {
+    setStep("Create", "skipped");
+    setProgress(100, "Cannot be generated here");
+    await speakLine(data.reply);
+    return;
+  }
+
+  // Guided generation: one question per missing detail, asked and answered by voice.
+  while (state.running && data.status === "collecting") {
+    await speakLine(data.reply);
+    const answer = await hearAnswer();
+    if (!answer) return;                 // abandoned; the collected fields stay saved
+    status("Noting that down…");
+    data = await api("/assistant/api/document/turn",
+                     {session_id: state.sessionId, answer});
+    const ratio = data.total ? data.collected / data.total : 0;
+    setProgress(30 + ratio * 40, `Application details: ${data.collected} of ${data.total}`);
+  }
+  checkRunning();
+
+  setStep("Collect", "complete");
+  setStep("Create", "complete");
+  setStep("Save", "complete");
+  await speakScript("ready");
+  presentResult(data.result);
+}
+
+// ---------- results ----------
 function downloadWhenNotPrinted(result) {
   if (result.printed || !result.pdf_url) return;
   const link = document.createElement("a");
@@ -367,117 +512,39 @@ function downloadWhenNotPrinted(result) {
 }
 
 function presentResult(result) {
-  state.stage = "complete";
   state.result = result;
-  ui.composer.hidden = true;
   ui.resultCard.hidden = false;
   ui.pdfLink.href = result.pdf_url;
   ui.docxLink.hidden = !result.docx_url;
   if (result.docx_url) ui.docxLink.href = result.docx_url;
   setStep("Print", result.printed ? "complete" : "skipped");
   setProgress(100, result.printed ? "Saved and printed" : "Saved; printing skipped");
+  const title = result.title || "Document";
   if (result.printed) {
     ui.resultSummary.className = "success-box";
-    ui.resultSummary.textContent = `${result.title || "Document"} was saved and sent to ${result.printer_name}.`;
+    ui.resultSummary.textContent = `${title} was saved and sent to ${result.printer_name}.`;
   } else if (result.print_status === "not_connected") {
     ui.resultSummary.className = "warning-box";
-    ui.resultSummary.textContent = `${result.title || "Document"} was saved. Printer not connected, so the PDF was not printed.`;
+    ui.resultSummary.textContent = `${title} was saved. Printer not connected, so it was not printed.`;
   } else {
     ui.resultSummary.className = "warning-box";
-    ui.resultSummary.textContent = `${result.title || "Document"} was saved, but printing failed: ${result.print_error || "unknown printer error"}`;
+    ui.resultSummary.textContent = `${title} was saved, but printing failed: ${result.print_error || "unknown printer error"}`;
   }
-  ui.statusText.textContent = "Finished.";
   refreshPrinterStatus();
   downloadWhenNotPrinted(result);
-  setBusy(false);
 }
 
-function showError(error) {
-  ui.statusText.textContent = "Error: " + error.message;
-  addMessage("assistant", "I could not continue: " + error.message);
-  setBusy(false);
-}
-
-async function listenForAnswer() {
-  if (state.busy || activeSession()) return;
-  ui.micBtn.classList.add("active");
-  ui.stopBtn.hidden = false;
-  ui.answerInput.value = "";
-  ui.statusText.textContent = "Listening… pause for 3 seconds or press Stop listening.";
-  try {
-    const answer = await listen({
-      wsPath:"/assistant/api/listen",
-      language:state.language,
-      meterEl:ui.meterFill,
-      onPartial:value => { ui.answerInput.value = value || ""; },
-      onStatus:value => { ui.statusText.textContent = value; },
-    });
-    if (answer) {
-      ui.answerInput.value = answer;
-      await submitAnswer();
-    } else {
-      ui.statusText.textContent = "No speech detected. You can try again or type your answer.";
-    }
-  } catch (error) {
-    showError(error);
-  } finally {
-    ui.micBtn.classList.remove("active");
-    ui.stopBtn.hidden = true;
-  }
-}
-
-async function printAgain() {
-  if (!state.result || !state.sessionId) return;
-  ui.printAgainBtn.disabled = true;
-  ui.resultSummary.textContent = "Checking printer…";
-  try {
-    const path = state.mode === "resume" ? "/auto/print" : "/assistant/api/document/print";
-    const result = await api(path, {session_id:state.sessionId});
-    presentResult({...state.result, ...result});
-  } catch (error) {
-    ui.resultSummary.className = "warning-box";
-    ui.resultSummary.textContent = "Could not print: " + error.message;
-  } finally {
-    ui.printAgainBtn.disabled = false;
-  }
-}
-
-function restart() {
+// ---------- start / stop ----------
+ui.begin.addEventListener("click", () => { if (!state.running) runSession(); });
+ui.stopBtn.addEventListener("click", () => {
+  if (!state.running) return;
+  state.running = false;
   activeSession()?.abort();
   window.speechSynthesis?.cancel();
-  state = {mode:null,stage:"choice",language:ui.languageSelect.value,
-           sessionId:null,result:null,busy:false};
-  ui.choiceCard.hidden = false;
-  ui.workflowCard.hidden = true;
-  ui.resultCard.hidden = true;
-  ui.composer.hidden = false;
-  ui.answerInput.value = "";
-  ["Choose","Collect","Create","Save","Print"].forEach(name => setStep(name, ""));
-}
-
-ui.documentChoice.addEventListener("click", () => startMode("document"));
-ui.resumeChoice.addEventListener("click", () => startMode("resume"));
-ui.sendBtn.addEventListener("click", submitAnswer);
-ui.micBtn.addEventListener("click", listenForAnswer);
-ui.stopBtn.addEventListener("click", () => {
-  const active = activeSession();
-  if (!active) return;
-  ui.stopBtn.disabled = true;
-  ui.stopBtn.textContent = "Sending answer…";
-  active.finish();
-  setTimeout(() => {
-    ui.stopBtn.disabled = false;
-    ui.stopBtn.textContent = "Stop listening & send answer";
-  }, 1000);
+  status("Stopped.");
+  ui.stopBtn.hidden = true;
+  ui.begin.hidden = false;
 });
-ui.answerInput.addEventListener("keydown", event => {
-  if (event.key === "Enter" && !event.shiftKey) {
-    event.preventDefault();
-    submitAnswer();
-  }
-});
-ui.restartBtn.addEventListener("click", restart);
-ui.printAgainBtn.addEventListener("click", printAgain);
 </script>
 </body>
 </html>

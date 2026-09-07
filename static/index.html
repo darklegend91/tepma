@@ -25,9 +25,7 @@
     </div>
     <div class="row" style="margin-top:0.6rem">
       <a href="/interview/resume/latest/docx"><button>Download Word (.docx)</button></a>
-      <input type="email" id="emailTo" placeholder="email@example.com"
-             style="font:inherit; padding:0.6rem; border-radius:8px; border:1px solid color-mix(in srgb, currentColor 25%, transparent); background:transparent; color:inherit">
-      <button id="emailBtn">Email resume</button>
+      <button id="emailBtn" disabled>Email resume</button>
       <span class="status" id="emailStatus"></span>
     </div>
   </div>
@@ -126,9 +124,16 @@ endPrintBtn.addEventListener("click", async () => {
   endPrintBtn.disabled = false;
 });
 
+// Nothing is typed anywhere in TePMA, so the recipient is the address the candidate
+// spoke during the interview and the facts layer corrected - not a text field.
+let spokenEmail = null;
+
 emailBtn.addEventListener("click", async () => {
-  const to = emailTo.value.trim();
-  if (!to.includes("@")) { emailStatus.textContent = "Enter a valid email address."; return; }
+  const to = spokenEmail || "";
+  if (!to.includes("@")) {
+    emailStatus.textContent = "No email address was captured in the interview.";
+    return;
+  }
   emailBtn.disabled = true;
   emailStatus.textContent = "Sending…";
   try {
@@ -159,6 +164,9 @@ finishBtn.addEventListener("click", async () => {
     if (!res.ok) throw new Error("Server error " + res.status);
     const data = await res.json();
     profileJson.textContent = JSON.stringify(data.profile, null, 2);
+    spokenEmail = (data.profile?.email || "").trim() || null;
+    emailBtn.disabled = !spokenEmail;
+    emailStatus.textContent = spokenEmail ? `Will send to ${spokenEmail}.` : "";
     lastPdfUrl = data.pdf_url;
     pdfLink.href = data.pdf_url;
     resultCard.style.display = "";

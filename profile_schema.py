@@ -1,4 +1,6 @@
 """Resume profile JSON schema (Ollama structured-output format) and extraction prompt."""
+import json
+import re
 
 PROFILE_SCHEMA = {
     "type": "object",
@@ -60,6 +62,15 @@ PROFILE_SCHEMA = {
 EXTRACTOR_PROMPT = """You are a resume writer. You are given the transcript of a voice \
 interview with a job candidate. Extract their information into the given JSON structure.
 
+THE MOST IMPORTANT RULE - the interview may be in English, Hindi or Punjabi, often mixed, \
+but EVERY value you write must be in English, in the Latin alphabet. Never copy Devanagari \
+or Gurmukhi text into any field, not even for names, cities or institutions:
+- Translate what was said: "पेंटर" -> "Painter", "डिप्लोमा" -> "Diploma".
+- Transliterate names and places rather than translating them: "आदित्य पठानिया" -> \
+"Aditya Pathania", "राजपुरा" -> "Rajpura", "आई टी आई हमीरपुर" -> "ITI Hamirpur".
+- Spoken email addresses are dictated, not spelled: "अदित्य एट दि रेट जीमेल डॉट कॉम" -> \
+"aditya@gmail.com".
+
 Rules:
 - Use ONLY information the candidate actually stated. Never invent employers, dates, \
 degrees, or numbers. Leave a field as an empty string or empty list if it was not covered.
@@ -69,7 +80,125 @@ numbers and impact the candidate mentioned.
 - Fix obvious speech-recognition errors (e.g. "gee mail" -> "gmail") but do not guess \
 spellings of names the candidate spelled out; use exactly what they spelled.
 - skills should be short entries like "Python" or "React", not sentences.
-- The interview may be in English, Hindi, or Punjabi (often mixed). ALWAYS write the \
-resume itself in professional English, translating what the candidate said.
 - Indian context: keep institution names as the candidate said them (they are corrected \
 automatically later),put any 6-digit PIN code into the location field , and make sure the phone numbers are 10 digits and in resume its written as +91 then the phone number."""
+
+
+# Scripts a resume must never be typeset in. The extractor is told to write English only,
+# but a local model asked for structured output tends to mirror the language it was given,
+# and one Devanagari field is enough to break both the PDF and the institution matcher -
+# so the rule is enforced here rather than merely requested in the prompt.
+_INDIC_SCRIPTS = re.compile(
+    "[ऀ-ॿ"      # Devanagari
+    "਀-੿"       # Gurmukhi
+    "ঀ-৿"       # Bengali
+    "஀-௿"       # Tamil
+    "ఀ-౿"       # Telugu
+    "ഀ-ൿ]"      # Malayalam
+)
+
+ROMANIZE_PROMPT = """You convert resume fields into English for typesetting.
+
+Each input is a resume field and its value. Return the English version of every value,
+using the field name to decide how:
+- name, institution, company, location: TRANSLITERATE, never translate. "आदित्य पठानिया"
+  -> "Aditya Pathania", "राजपुरा" -> "Rajpura". A name that reads like nonsense is still
+  transliterated as sounds ("कि चीज" -> "Ki Chij"), because it is what the microphone
+  heard of a real person's name - translating it into English words invents a new one.
+- email: a dictated address becomes a real one. "एट दि रेट" / "एड दिरेट" / "ऐट" all mean
+  "@", and "डॉट" means ".", so "अदित्य एट दि रेट जीमेल डॉट कॉम" -> "aditya@gmail.com".
+- every other field: translate the meaning into natural resume English. "पेंटर" ->
+  "Painter", "डिज़ाइन" -> "Design", "डिप्लोमा" -> "Diploma".
+- Keep digits, punctuation and any English already present exactly as they are.
+- Add nothing that was not said."""
+
+ROMANIZE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "translations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "field": {"type": "string"},
+                    "source": {"type": "string"},
+                    "english": {"type": "string"},
+                },
+                "required": ["field", "source", "english"],
+            },
+        },
+    },
+    "required": ["translations"],
+}
+
+
+def _indic_strings(value, found: set, field: str = "text"):
+    """Collect (field, string) for every value that is not typesettable as Latin text.
+
+    The field name travels with the string: "name" and "institution" have to be
+    transliterated while everything else is translated, and the model cannot tell which
+    is which from a bare list of words.
+    """
+    if isinstance(value, str):
+        if _INDIC_SCRIPTS.search(value):
+            found.add((field, value))
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            if not key.startswith("_"):        # _corrections and friends are bookkeeping
+                _indic_strings(item, found, key)
+    elif isinstance(value, list):
+        for item in value:
+            _indic_strings(item, found, field)
+    return found
+
+
+def _apply_translations(value, mapping: dict):
+    if isinstance(value, str):
+        return mapping.get(value, value)
+    if isinstance(value, dict):
+        return {key: (item if key.startswith("_") else _apply_translations(item, mapping))
+                for key, item in value.items()}
+    if isinstance(value, list):
+        return [_apply_translations(item, mapping) for item in value]
+    return value
+
+
+async def romanize_profile(profile: dict) -> dict:
+    """Rewrite any non-Latin profile field in English, recording each change.
+
+    Runs before the facts layer on purpose: the university matcher and PIN lookup are
+    Latin-only, so a Devanagari institution name can never be corrected until it is
+    romanized here. A failure returns the profile untouched - a resume with Hindi in it
+    is worse than one without, but losing the interview entirely is worse than both.
+    """
+    from engines import llm_extract
+
+    sources = sorted(_indic_strings(profile, set()))
+    if not sources:
+        return profile
+    request = [{"field": field, "value": value} for field, value in sources]
+    try:
+        result = await llm_extract(
+            [{"role": "user", "content": json.dumps(request, ensure_ascii=False, indent=1)}],
+            ROMANIZE_PROMPT,
+            ROMANIZE_SCHEMA,
+        )
+    except Exception:
+        return profile
+
+    originals = {value for _, value in sources}
+    mapping = {
+        item["source"]: item["english"].strip()
+        for item in result.get("translations", [])
+        if isinstance(item, dict) and item.get("source") in originals
+        and str(item.get("english", "")).strip()
+        and not _INDIC_SCRIPTS.search(str(item.get("english", "")))
+    }
+    if not mapping:
+        return profile
+    profile = _apply_translations(profile, mapping)
+    profile.setdefault("_corrections", []).extend(
+        {"field": "language", "from": source, "to": english}
+        for source, english in mapping.items()
+    )
+    return profile
