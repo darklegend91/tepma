@@ -548,15 +548,13 @@ async def auto_build_resume(payload: dict):
     return _build_documents(s, json.loads(profile_file.read_text()))
 
 
-@router.post("/print")
-async def auto_print(payload: dict):
-    """Deliver the finished resume: email it to the candidate, and print it.
+def _deliver(s: dict) -> dict:
+    """Email the finished resume to the candidate and print it, then record what happened.
 
     Both are best-effort and reported separately, because the kiosk tells the candidate
     what actually happened - promising "it has been emailed to you" when no mail server
     is configured is worse than saying the print is the only copy.
     """
-    s = _session(payload.get("session_id", ""))
     result = _print_saved_pdf(s)
 
     emailed, email_error, address = False, None, ""
@@ -576,17 +574,25 @@ async def auto_print(payload: dict):
     return delivery
 
 
+@router.post("/print")
+async def auto_print(payload: dict):
+    """The last step of an interview: deliver the resume and report how it went."""
+    return _deliver(_session(payload.get("session_id", "")))
+
+
 @router.post("/finish")
 async def auto_finish(payload: dict):
     """Compatibility endpoint: build, save, and conditionally print the resume."""
     s = _session(payload.get("session_id", ""))
     profile = await _build_profile(s)
     documents = _build_documents(s, profile)
-    printing = _print_saved_pdf(s)
+    # The same delivery as /auto/print: this endpoint exists so a caller can do the whole
+    # tail in one request, not so it can quietly behave differently.
+    delivery = _deliver(s)
 
     return {
         **documents,
-        **printing,
+        **delivery,
         "profile": profile,
         "corrections": profile.get("_corrections", []),
         "warnings": profile.get("_validation_warnings", []),
