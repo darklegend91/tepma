@@ -62,3 +62,29 @@ def printer_status():
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+
+@app.on_event("startup")
+async def warm_speech_cache():
+    """Synthesize the scripted lines once, in the background, at startup.
+
+    Every visitor hears the same greeting in three languages before they say anything, and
+    Kokoro needs seconds per line the first time - loading the model alone took the better
+    part of a minute. Doing it here means the first person to walk up to the kiosk is
+    greeted from disk. Later sessions reuse the same cached WAVs, so the only speech the
+    machine ever synthesizes live is the part that is genuinely different: the questions.
+    """
+    import asyncio
+
+    from assistant_script import greeting_lines, spoken_lines
+    from engines import synthesize_wav
+
+    async def warm():
+        for text, language in greeting_lines() + spoken_lines():
+            try:
+                await asyncio.to_thread(synthesize_wav, text, language)
+            except Exception as exc:      # a voice that cannot speak a line must not stop boot
+                print(f"warm-up: could not synthesize {language} line: {exc}")
+        print("Speech cache warm.")
+
+    asyncio.create_task(warm())

@@ -15,6 +15,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response
 
+from assistant_script import SCRIPT
 from document_render import render_application_docx, render_application_pdf
 from engines import llm_extract, synthesize_wav
 from facts import date_context
@@ -488,6 +489,12 @@ CHOICE_SCHEMA = {
 }
 
 
+@router.get("/script")
+async def assistant_script():
+    """The scripted lines the page speaks. Served so the page and the speech cache agree."""
+    return {"script": SCRIPT}
+
+
 @router.post("/choice")
 async def assistant_choice(payload: dict):
     """Classify a spoken resume-or-document answer.
@@ -517,7 +524,13 @@ async def assistant_speak(payload: dict):
         raise HTTPException(400, "No text provided")
     # Kokoro is blocking and CPU-bound, and loading it the first time takes tens of
     # seconds - on the event loop that freezes every other request in the kiosk.
-    audio = await asyncio.to_thread(synthesize_wav, text)
+    language = str(payload.get("language", "en"))
+    if language not in LANGUAGES:
+        language = "en"
+    try:
+        audio = await asyncio.to_thread(synthesize_wav, text, language)
+    except Exception as exc:
+        raise HTTPException(500, f"Could not speak that line: {exc}") from exc
     return Response(content=audio, media_type="audio/wav")
 
 

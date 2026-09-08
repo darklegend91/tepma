@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse
 from engines import (TURN_MODEL, extract_partial_string, llm_extract, llm_stream,
                      split_sentences, synthesize_wav)
 import mailer
+from assistant_script import section_question
 from facts import apply_facts, date_context
 from printer_status import default_printer_status
 from profile_schema import EXTRACTOR_PROMPT, PROFILE_SCHEMA, romanize_profile
@@ -191,19 +192,40 @@ async def auto_start(payload: dict):
                  "(The candidate has joined the voice call. Greet them and begin the interview.)"}]
     s = {"messages": messages, "turns": 0, "dir": session_dir, "language": language,
          "index": 0, "followups": 0, "phase": "sections", "gaps": [], "gaps_asked": 0}
-    result = await llm_extract(
-        messages + [{"role": "user", "content": _turn_note(s)}],
-        AUTO_PROMPT + date_context() + _language_note(language),
-        TURN_SCHEMA,
-        model=TURN_MODEL,
-    )
-    reply = result["reply"].strip()
+    reply = await _ask_question(s)
     messages.append({"role": "assistant", "content": reply})
     _sessions[session_id] = s
     _save(s)
     return {"session_id": session_id, "reply": reply, "done": False,
             "language": language, "section": SECTION_IDS[0],
             "collected": 0, "total": len(SECTIONS)}
+
+
+# A spoken question is one or two sentences. Capping generation keeps a turn bounded and
+# stops a small model looping in an unfamiliar script - see llm_extract's max_tokens.
+TURN_MAX_TOKENS = 220
+
+
+async def _ask_question(s: dict) -> str:
+    """The next question, phrased by the model - or the scripted one if it cannot.
+
+    An interview that dies in the middle loses everything the candidate has already said,
+    so any model failure here degrades to the fixed wording for the section instead.
+    """
+    language = s.get("language", "en")
+    try:
+        result = await llm_extract(_turn_messages(s), _turn_system(s), TURN_SCHEMA,
+                                   model=TURN_MODEL, max_tokens=TURN_MAX_TOKENS)
+        reply = (result.get("reply") or "").strip()
+        if reply:
+            return reply
+    except Exception as exc:
+        print(f"interview: falling back to the scripted question ({exc})")
+    if _current_need(s) is None:
+        return section_question("closing", language)
+    section = (SECTION_IDS[s["index"]] if s["phase"] == "sections"
+               and s["index"] < len(SECTIONS) else "gaps")
+    return section_question(section, language)
 
 
 @router.post("/turn")
@@ -215,9 +237,7 @@ async def auto_turn(payload: dict):
         raise HTTPException(400, "Empty answer")
 
     _begin_turn(s, answer)
-    result = await llm_extract(_turn_messages(s), _turn_system(s), TURN_SCHEMA,
-                               model=TURN_MODEL)
-    return _finish_turn(s, result)
+    return _finish_turn(s, {"reply": await _ask_question(s)})
 
 
 def _begin_turn(s: dict, answer: str):
@@ -361,9 +381,7 @@ async def auto_gap_check(payload: dict):
     if state["done"] or s["turns"] >= MAX_TURNS:
         return {"reply": "", "done": True, "phase": "gaps", "section": "gaps",
                 "collected": len(SECTIONS), "total": len(SECTIONS), "gaps": 0}
-    result = await llm_extract(_turn_messages(s), _turn_system(s), TURN_SCHEMA,
-                               model=TURN_MODEL)
-    reply = (result.get("reply") or "").strip()
+    reply = await _ask_question(s)
     s["messages"].append({"role": "assistant", "content": reply})
     _save(s)
     return {"reply": reply, "done": False, "phase": "gaps", "section": "gaps",
@@ -540,7 +558,10 @@ async def auto_speak(payload: dict):
     text = (payload.get("text") or "").strip()
     if not text:
         raise HTTPException(400, "No text provided")
-    audio = await asyncio.to_thread(synthesize_wav, text)   # blocking, CPU-bound
+    language = payload.get("language", "en")
+    if language not in LANGUAGES:
+        language = "en"
+    audio = await asyncio.to_thread(synthesize_wav, text, language)   # blocking, CPU-bound
     return Response(content=audio, media_type="audio/wav")
 
 
@@ -569,14 +590,12 @@ async def turn_stream_socket(ws: WebSocket):
             await ws.send_json({"type": "error", "detail": "Empty answer"})
             return
 
-        # Kokoro is English-only (KPipeline lang_code="a"); Hindi and Punjabi are
-        # spoken by the browser, so for those we stream the text and skip synthesis.
-        speak_here = s.get("language", "en") == "en"
+        language = s.get("language", "en")
         _begin_turn(s, answer)
 
         raw, spoken, pending = "", "", ""
         async for delta in llm_stream(_turn_messages(s), _turn_system(s), TURN_SCHEMA,
-                                      model=TURN_MODEL):
+                                      model=TURN_MODEL, max_tokens=TURN_MAX_TOKENS):
             raw += delta
             reply_so_far = extract_partial_string(raw, "reply")
             if len(reply_so_far) <= len(spoken) + len(pending):
@@ -586,10 +605,9 @@ async def turn_stream_socket(ws: WebSocket):
             for sentence in sentences:
                 spoken += sentence if spoken.endswith(" ") or not spoken else " " + sentence
                 await ws.send_json({"type": "sentence", "text": sentence})
-                if speak_here:
-                    # Kokoro is blocking and CPU-bound - never run it on the event loop.
-                    audio = await asyncio.to_thread(synthesize_wav, sentence)
-                    await ws.send_bytes(audio)
+                # Kokoro is blocking and CPU-bound - never run it on the event loop.
+                audio = await asyncio.to_thread(synthesize_wav, sentence, language)
+                await ws.send_bytes(audio)
 
         try:
             result = json.loads(raw)
@@ -602,8 +620,7 @@ async def turn_stream_socket(ws: WebSocket):
         tail = (result.get("reply") or "")[len(spoken):].strip()
         if tail:
             await ws.send_json({"type": "sentence", "text": tail})
-            if speak_here:
-                await ws.send_bytes(await asyncio.to_thread(synthesize_wav, tail))
+            await ws.send_bytes(await asyncio.to_thread(synthesize_wav, tail, language))
 
         await ws.send_json({"type": "done", **_finish_turn(s, result)})
     except WebSocketDisconnect:

@@ -111,70 +111,16 @@ const ui = Object.fromEntries([
   "pdfLink","docxLink"
 ].map(id => [id, el(id)]));
 
-// ---------------------------------------------------------------------------
-// Everything the assistant says outside the interview itself is scripted, not
-// generated: these lines must come out identical every session, and a local model
-// paraphrasing "say résumé or document" is how a kiosk becomes unusable.
-// ---------------------------------------------------------------------------
-const SCRIPT = {
-  askLanguage: {
-    en: "Welcome to TePMA. Which language would you like to continue in? You can say English, Hindi, or Punjabi.",
-    hi: "टेपमा में आपका स्वागत है। आप किस भाषा में बात करना चाहेंगे? अंग्रेज़ी, हिंदी, या पंजाबी।",
-    pa: "ਟੇਪਮਾ ਵਿੱਚ ਤੁਹਾਡਾ ਸਵਾਗਤ ਹੈ। ਤੁਸੀਂ ਕਿਸ ਭਾਸ਼ਾ ਵਿੱਚ ਗੱਲ ਕਰਨਾ ਚਾਹੋਗੇ? ਅੰਗਰੇਜ਼ੀ, ਹਿੰਦੀ, ਜਾਂ ਪੰਜਾਬੀ।",
-  },
-  languageUnclear: {
-    en: "Sorry, I did not catch that. Please say English, Hindi, or Punjabi.",
-    hi: "माफ़ कीजिए, मैं समझ नहीं पाया। कृपया कहिए अंग्रेज़ी, हिंदी, या पंजाबी।",
-    pa: "ਮਾਫ਼ ਕਰਨਾ, ਮੈਂ ਸਮਝ ਨਹੀਂ ਸਕਿਆ। ਕਿਰਪਾ ਕਰਕੇ ਕਹੋ ਅੰਗਰੇਜ਼ੀ, ਹਿੰਦੀ, ਜਾਂ ਪੰਜਾਬੀ।",
-  },
-  // Said once the resume exists. Two versions, because the kiosk only claims to have
-  // emailed the profile when the mail actually went out.
-  finishedEmailed: {
-    en: "Your online profile has been made and sent to your email. You can collect the printed resume from the printer. Thank you.",
-    hi: "आपका ऑनलाइन प्रोफ़ाइल बन गया है और आपके ईमेल पर भेज दिया गया है। छपा हुआ रिज़्यूमे आप प्रिंटर से ले सकते हैं। धन्यवाद।",
-    pa: "ਤੁਹਾਡੀ ਆਨਲਾਈਨ ਪ੍ਰੋਫ਼ਾਈਲ ਬਣ ਗਈ ਹੈ ਅਤੇ ਤੁਹਾਡੇ ਈਮੇਲ ਉੱਤੇ ਭੇਜ ਦਿੱਤੀ ਗਈ ਹੈ। ਛਪਿਆ ਹੋਇਆ ਰਿਜ਼ਿਊਮੇ ਤੁਸੀਂ ਪ੍ਰਿੰਟਰ ਤੋਂ ਲੈ ਸਕਦੇ ਹੋ। ਧੰਨਵਾਦ।",
-  },
-  finishedPrintOnly: {
-    en: "Your online profile has been made. You can collect the printed resume from the printer. Thank you.",
-    hi: "आपका ऑनलाइन प्रोफ़ाइल बन गया है। छपा हुआ रिज़्यूमे आप प्रिंटर से ले सकते हैं। धन्यवाद।",
-    pa: "ਤੁਹਾਡੀ ਆਨਲਾਈਨ ਪ੍ਰੋਫ਼ਾਈਲ ਬਣ ਗਈ ਹੈ। ਛਪਿਆ ਹੋਇਆ ਰਿਜ਼ਿਊਮੇ ਤੁਸੀਂ ਪ੍ਰਿੰਟਰ ਤੋਂ ਲੈ ਸਕਦੇ ਹੋ। ਧੰਨਵਾਦ।",
-  },
-  askIntent: {
-    en: "How can I help you? Say résumé if you want me to build your résumé, or say document if you need a document.",
-    hi: "मैं आपकी कैसे मदद कर सकता हूँ? रिज़्यूमे बनवाने के लिए कहिए रिज़्यूमे, या कोई दस्तावेज़ चाहिए तो कहिए दस्तावेज़।",
-    pa: "ਮੈਂ ਤੁਹਾਡੀ ਕਿਵੇਂ ਮਦਦ ਕਰ ਸਕਦਾ ਹਾਂ? ਰਿਜ਼ਿਊਮੇ ਬਣਾਉਣ ਲਈ ਕਹੋ ਰਿਜ਼ਿਊਮੇ, ਜਾਂ ਕੋਈ ਦਸਤਾਵੇਜ਼ ਚਾਹੀਦਾ ਹੈ ਤਾਂ ਕਹੋ ਦਸਤਾਵੇਜ਼।",
-  },
-  intentUnclear: {
-    en: "Sorry, I did not understand. Please say résumé, or document.",
-    hi: "माफ़ कीजिए, मैं समझ नहीं पाया। कृपया कहिए रिज़्यूमे, या दस्तावेज़।",
-    pa: "ਮਾਫ਼ ਕਰਨਾ, ਮੈਂ ਸਮਝ ਨਹੀਂ ਸਕਿਆ। ਕਿਰਪਾ ਕਰਕੇ ਕਹੋ ਰਿਜ਼ਿਊਮੇ, ਜਾਂ ਦਸਤਾਵੇਜ਼।",
-  },
-  askDocument: {
-    en: "Tell me which document you need. I will look in the library first, and if it is not there I will collect the details and write it.",
-    hi: "बताइए आपको कौन-सा दस्तावेज़ चाहिए। मैं पहले लाइब्रेरी में देखूँगा, और न मिलने पर ज़रूरी जानकारी लेकर उसे तैयार करूँगा।",
-    pa: "ਦੱਸੋ ਤੁਹਾਨੂੰ ਕਿਹੜਾ ਦਸਤਾਵੇਜ਼ ਚਾਹੀਦਾ ਹੈ। ਮੈਂ ਪਹਿਲਾਂ ਲਾਇਬ੍ਰੇਰੀ ਵਿੱਚ ਦੇਖਾਂਗਾ, ਅਤੇ ਨਾ ਮਿਲਣ ਤੇ ਲੋੜੀਂਦੀ ਜਾਣਕਾਰੀ ਲੈ ਕੇ ਉਸਨੂੰ ਤਿਆਰ ਕਰਾਂਗਾ।",
-  },
-  notHeard: {
-    en: "Sorry, I did not hear anything. Please say that again.",
-    hi: "माफ़ कीजिए, मुझे कुछ सुनाई नहीं दिया। कृपया फिर से कहिए।",
-    pa: "ਮਾਫ਼ ਕਰਨਾ, ਮੈਨੂੰ ਕੁਝ ਸੁਣਾਈ ਨਹੀਂ ਦਿੱਤਾ। ਕਿਰਪਾ ਕਰਕੇ ਦੁਬਾਰਾ ਕਹੋ।",
-  },
-  ready: {
-    en: "Your document is ready.",
-    hi: "आपका दस्तावेज़ तैयार है।",
-    pa: "ਤੁਹਾਡਾ ਦਸਤਾਵੇਜ਼ ਤਿਆਰ ਹੈ।",
-  },
-  anythingElse: {
-    en: "Is there anything else? Say résumé, say document, or say stop to finish.",
-    hi: "कुछ और चाहिए? कहिए रिज़्यूमे, कहिए दस्तावेज़, या समाप्त करने के लिए कहिए बंद।",
-    pa: "ਹੋਰ ਕੁਝ ਚਾਹੀਦਾ ਹੈ? ਕਹੋ ਰਿਜ਼ਿਊਮੇ, ਕਹੋ ਦਸਤਾਵੇਜ਼, ਜਾਂ ਖ਼ਤਮ ਕਰਨ ਲਈ ਕਹੋ ਬੰਦ।",
-  },
-  goodbye: {
-    en: "Thank you for using TePMA. Goodbye.",
-    hi: "टेपमा का उपयोग करने के लिए धन्यवाद। नमस्ते।",
-    pa: "ਟੇਪਮਾ ਵਰਤਣ ਲਈ ਧੰਨਵਾਦ। ਸਤ ਸ੍ਰੀ ਅਕਾਲ।",
-  },
-};
+// The scripted lines (greeting, prompts, closing) come from the server: it holds one copy,
+// which is the same copy its speech cache was warmed with, so the greeting plays from disk
+// instead of being synthesized again for every person who walks up.
+let SCRIPT = {};
+
+async function loadScript() {
+  const response = await fetch("/assistant/api/script");
+  if (!response.ok) throw new Error("Could not load the assistant's script");
+  SCRIPT = (await response.json()).script || {};
+}
 
 // Language and intent are one-word answers, so they are matched here first: keyword
 // matching never mishears "résumé", costs nothing, and works while the model is loading.
@@ -363,6 +309,7 @@ async function runSession() {
   setProgress(4, "Choosing a language");
 
   try {
+    if (!SCRIPT.askLanguage) await loadScript();
     const language = await askUntilUnderstood("askLanguage", "languageUnclear",
                                               heard => detectLanguage(heard));
     state.language = language || "en";     // a broken microphone must not deadlock a kiosk
@@ -569,6 +516,7 @@ function presentResult(result) {
 }
 
 // ---------- start / stop ----------
+loadScript().catch(() => { /* retried on the first tap */ });
 ui.begin.addEventListener("click", () => { if (!state.running) runSession(); });
 ui.stopBtn.addEventListener("click", () => {
   if (!state.running) return;

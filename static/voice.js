@@ -129,32 +129,24 @@ function listen({ wsPath, onPartial, onStatus, meterEl, language = "en" }) {
 function activeSession() { return session; }
 
 // POST text to a TTS endpoint and play the returned WAV.
+//
+// Every language is synthesized on the server. The browser's own speechSynthesis used to
+// handle Hindi and Punjabi, which meant silence on any machine without an hi-IN voice
+// installed and no Punjabi at all on macOS; it stays only as a fallback for when the
+// server cannot speak a line.
 async function speak(ttsPath, text, language = "en") {
-  if (language !== "en" && "speechSynthesis" in window) {
-    const locale = language === "hi" ? "hi-IN" : "pa-IN";
-    return new Promise((resolve, reject) => {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = locale;
-      const voices = window.speechSynthesis.getVoices();
-      const exactVoice = voices.find(voice => voice.lang.toLowerCase() === locale.toLowerCase());
-      const relatedVoice = voices.find(voice => voice.lang.toLowerCase().startsWith(language));
-      if (exactVoice || relatedVoice) utterance.voice = exactVoice || relatedVoice;
-      utterance.onend = resolve;
-      utterance.onerror = event => reject(new Error(event.error || "Speech playback failed"));
-      window.speechSynthesis.speak(utterance);
+  try {
+    const res = await fetch(ttsPath, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, language }),
     });
+    if (!res.ok) throw new Error("TTS error: " + res.status);
+    return await playBlob(await res.blob());
+  } catch (err) {
+    if (language === "en") throw err;
+    return speakLocally(text, language);
   }
-  const res = await fetch(ttsPath, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text }),
-  });
-  if (!res.ok) throw new Error("TTS error: " + res.status);
-  const blob = await res.blob();
-  const audio = new Audio(URL.createObjectURL(blob));
-  await audio.play();
-  return new Promise(r => audio.onended = r);
 }
 
 // Play one WAV blob to completion. Playback errors are swallowed on purpose: a missing
@@ -216,12 +208,6 @@ async function streamTurn(sessionId, answer, language = "en", onSentence = null)
         const msg = JSON.parse(event.data);
         if (msg.type === "sentence") {
           if (onSentence) onSentence(msg.text);
-          // Hindi and Punjabi never get a WAV frame - Kokoro is English-only, so the
-          // browser speaks those itself, still one sentence at a time.
-          if (language !== "en") {
-            const text = msg.text;
-            queue = queue.then(() => speakLocally(text, language));
-          }
         } else if (msg.type === "done") {
           result = msg;
           ws.close();

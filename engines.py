@@ -1,7 +1,9 @@
 """Shared model engines: Whisper STT, Kokoro TTS, and the Ollama LLM client."""
+import hashlib
 import io
 import json
 import os
+from pathlib import Path
 import re
 import httpx
 import numpy as np
@@ -39,6 +41,18 @@ SILENCE_RMS = float(_setting("SILENCE_RMS", "0.005"))  # below this, do not call
 # Used by the faster-whisper (CPU) backend only.
 WHISPER_MODEL = _setting("WHISPER_MODEL", "small")
 TTS_VOICE = _setting("TTS_VOICE", "af_heart")
+# Kokoro speaks Hindi and Punjabi itself. It used to be English-only here, with the two
+# Indic languages handed to the browser's speechSynthesis - which is silent on any machine
+# without an hi-IN voice installed, and has no pa-IN voice on macOS at all. Punjabi uses
+# the Hindi voice: Kokoro has no Punjabi one, and it reads Gurmukhi intelligibly.
+TTS_VOICE_HI = _setting("TTS_VOICE_HI", "hf_alpha")
+TTS_LANGUAGES: dict[str, tuple[str, str]] = {
+    "en": ("a", TTS_VOICE),
+    "hi": ("h", TTS_VOICE_HI),
+    "pa": ("h", TTS_VOICE_HI),
+}
+# Synthesized speech is cached here by content hash; delete the directory to rebuild it.
+TTS_CACHE_DIR = Path(__file__).parent / "data" / "tts_cache"
 
 try:
     TTS_RATE = int(_setting("TTS_RATE", "24000"))
@@ -48,7 +62,7 @@ if TTS_RATE <= 0:
     raise RuntimeError("TTS_RATE must be a positive integer")
 
 _whisper = None
-_tts = None
+_tts: dict[str, object] = {}   # Kokoro pipeline per language code
 _mlx_ok = None
 
 
@@ -62,14 +76,15 @@ def get_whisper():
     return _whisper
 
 
-def get_tts():
-    global _tts
-    if _tts is None:
+def get_tts(language: str = "en"):
+    """The Kokoro pipeline for a spoken language, loaded once per language and cached."""
+    code, _ = TTS_LANGUAGES.get(language, TTS_LANGUAGES["en"])
+    if code not in _tts:
         from kokoro import KPipeline
-        print("Loading Kokoro TTS...")
-        _tts = KPipeline(lang_code="a")  # American English
+        print(f"Loading Kokoro TTS (lang_code={code})...")
+        _tts[code] = KPipeline(lang_code=code)
         print("Kokoro ready.")
-    return _tts
+    return _tts[code]
 
 
 def _is_hallucinated(text: str) -> bool:
@@ -149,12 +164,35 @@ def transcribe_audio(audio, fast: bool = False, language: str = "en") -> str:
     return " ".join(seg.text.strip() for seg in segments).strip()
 
 
-def synthesize_wav(text: str) -> bytes:
-    """Synthesize text to WAV bytes."""
-    chunks = [audio for _, _, audio in get_tts()(text, voice=TTS_VOICE)]
+def synthesize_wav(text: str, language: str = "en") -> bytes:
+    """Synthesize text to WAV bytes, in the language it is written in.
+
+    Cached on disk by (language, voice, text). The kiosk speaks the same scripted lines to
+    every person who walks up to it - the greeting alone is three languages long - and
+    Kokoro takes seconds per line. Generated speech (interview questions) is different
+    every time and simply never hits the cache.
+    """
+    key = hashlib.sha256(
+        "\u0000".join((language, TTS_LANGUAGES.get(language, TTS_LANGUAGES["en"])[1],
+                        str(TTS_RATE), text)).encode()
+    ).hexdigest()[:32]
+    cached = TTS_CACHE_DIR / f"{key}.wav"
+    if cached.is_file():
+        return cached.read_bytes()
+
+    _, voice = TTS_LANGUAGES.get(language, TTS_LANGUAGES["en"])
+    chunks = [audio for _, _, audio in get_tts(language)(text, voice=voice)]
+    if not chunks:                      # nothing phonemizable: wrong script for this voice
+        raise RuntimeError(f"Nothing to speak in {language}: {text[:40]!r}")
     buf = io.BytesIO()
     sf.write(buf, np.concatenate(chunks), TTS_RATE, format="WAV")  # type: ignore[arg-type]
-    return buf.getvalue()
+    audio = buf.getvalue()
+    try:
+        TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cached.write_bytes(audio)
+    except OSError:
+        pass                            # a read-only disk costs speed, not function
+    return audio
 
 
 # Sentence enders. The Devanagari danda and its double form matter: Hindi replies are
@@ -222,7 +260,8 @@ def extract_partial_string(raw: str, key: str) -> str:
     return "".join(out)
 
 
-async def llm_stream(messages: list[dict], system: str, schema: dict, model: str | None = None):
+async def llm_stream(messages: list[dict], system: str, schema: dict, model: str | None = None,
+                     max_tokens: int | None = None):
     """Yield raw response deltas from Ollama as they are generated.
 
     Same call as llm_extract, but streamed. The caller reassembles the JSON; use
@@ -234,6 +273,7 @@ async def llm_stream(messages: list[dict], system: str, schema: dict, model: str
         "stream": True,
         "think": False,
         "format": schema,
+        **({"options": {"num_predict": max_tokens}} if max_tokens else {}),
     }
     async with httpx.AsyncClient(timeout=300) as client:
         async with client.stream("POST", f"{OLLAMA_URL}/api/chat", json=body) as response:
@@ -253,9 +293,14 @@ async def llm_stream(messages: list[dict], system: str, schema: dict, model: str
 
 
 async def llm_extract(messages: list[dict], system: str, schema: dict,
-                      model: str | None = None) -> dict:
-    """Run the LLM with Ollama structured outputs: the reply is forced to match schema."""
+                      model: str | None = None, max_tokens: int | None = None) -> dict:
+    """Run the LLM with Ollama structured outputs: the reply is forced to match schema.
 
+    max_tokens caps the generation. Worth setting for anything spoken aloud: a small model
+    writing an unfamiliar script can loop instead of stopping - a Punjabi interview turn
+    ran until the 300s client timeout and killed the session, where the same question takes
+    about eight seconds when it terminates normally.
+    """
     async with httpx.AsyncClient(timeout=300) as client:
         r = await client.post(
             f"{OLLAMA_URL}/api/chat",
@@ -265,6 +310,7 @@ async def llm_extract(messages: list[dict], system: str, schema: dict,
                 "stream": False,
                 "think": False,
                 "format": schema,
+                **({"options": {"num_predict": max_tokens}} if max_tokens else {}),
             },
         )
         r.raise_for_status()
