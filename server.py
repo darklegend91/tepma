@@ -9,7 +9,7 @@ Routes:
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 import routes_auto
@@ -30,7 +30,14 @@ STATIC = Path(__file__).parent / "static"
 
 
 @app.get("/")
+async def home():
+    """One entry point: everything starts the hands-free assistant."""
+    return RedirectResponse("/assistant")
+
+
+@app.get("/manual")
 async def interview_page():
+    """The older click-driven interview, kept for debugging."""
     return FileResponse(STATIC / "index.html")
 
 
