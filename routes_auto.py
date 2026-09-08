@@ -10,6 +10,7 @@ written to disk every turn, so a refresh or crash never loses an interview.
 """
 import asyncio
 import json
+import os
 import re
 import subprocess
 import time
@@ -22,10 +23,12 @@ from fastapi.responses import FileResponse
 from engines import (TURN_MODEL, extract_partial_string, llm_extract, llm_stream,
                      split_sentences, synthesize_wav)
 import mailer
+import storage
 from assistant_script import section_question
 from facts import apply_facts, date_context
 from printer_status import default_printer_status
-from profile_schema import EXTRACTOR_PROMPT, PROFILE_SCHEMA, romanize_profile
+from profile_schema import (EXTRACTOR_PROMPT, PROFILE_SCHEMA, english_transcript,
+                            romanize_profile)
 from resume_docx import render_resume_docx
 from resume_pdf import render_resume
 from ws_stt import live_transcribe_socket
@@ -103,7 +106,8 @@ def _needs(s: dict) -> tuple[str | None, str | None]:
         following = SECTIONS[s["index"] + 1][1] if s["index"] + 1 < len(SECTIONS) else None
         return current, following
     gaps = s["gaps"]
-    return (gaps[0] if gaps else None), (gaps[1] if len(gaps) > 1 else None)
+    return (GAP_DESCRIPTIONS.get(gaps[0]) if gaps else None,
+            GAP_DESCRIPTIONS.get(gaps[1]) if len(gaps) > 1 else None)
 
 
 def _current_need(s: dict) -> str | None:
@@ -174,8 +178,24 @@ def _session(session_id: str) -> dict:
 
 
 def _save(s: dict):
+    """Persist the interview: to disk always, and to MongoDB when it is reachable.
+
+    The file is the copy the kiosk itself depends on - it is what a refresh or a crash
+    recovers from - so it is written first and unconditionally. Mongo is the queryable
+    record on top of it, and never a reason for an interview to fail.
+    """
     (s["dir"] / "transcript.json").write_text(
         json.dumps(s["messages"], indent=2, ensure_ascii=False)
+    )
+    storage.save_session(
+        s["dir"].name,
+        language=s.get("language", "en"),
+        phase=s.get("phase"),
+        section=(SECTION_IDS[s["index"]] if s.get("phase") == "sections"
+                 and s["index"] < len(SECTIONS) else s.get("phase")),
+        turns=s.get("turns", 0),
+        gaps=s.get("gaps", []),
+        transcript=s["messages"],
     )
 
 
@@ -206,6 +226,15 @@ async def auto_start(payload: dict):
 TURN_MAX_TOKENS = 220
 
 
+# Languages the interviewer model is trusted to phrase questions in. Punjabi is not one of
+# them: qwen3:4b-instruct produced partly meaningless Gurmukhi ("ਪਤੱਤੀ" for letter,
+# "10-ਅੱਖਰ ਮੋਬਾਈਲ ਨੰਬਰ" for a 10-digit number) and once invented an email address inside the
+# question. The scripted wording is stiffer but correct, and it is already in the speech
+# cache. Set PHRASED_LANGUAGES to override.
+PHRASED_LANGUAGES = {code.strip() for code in
+                     os.getenv("PHRASED_LANGUAGES", "en,hi").split(",") if code.strip()}
+
+
 async def _ask_question(s: dict) -> str:
     """The next question, phrased by the model - or the scripted one if it cannot.
 
@@ -213,6 +242,8 @@ async def _ask_question(s: dict) -> str:
     so any model failure here degrades to the fixed wording for the section instead.
     """
     language = s.get("language", "en")
+    if language not in PHRASED_LANGUAGES:
+        return _scripted_question(s, language)
     try:
         result = await llm_extract(_turn_messages(s), _turn_system(s), TURN_SCHEMA,
                                    model=TURN_MODEL, max_tokens=TURN_MAX_TOKENS)
@@ -221,10 +252,17 @@ async def _ask_question(s: dict) -> str:
             return reply
     except Exception as exc:
         print(f"interview: falling back to the scripted question ({exc})")
+    return _scripted_question(s, language)
+
+
+def _scripted_question(s: dict, language: str) -> str:
+    """The fixed wording for whatever the interview is collecting right now."""
     if _current_need(s) is None:
         return section_question("closing", language)
-    section = (SECTION_IDS[s["index"]] if s["phase"] == "sections"
-               and s["index"] < len(SECTIONS) else "gaps")
+    if s["phase"] == "gaps":
+        return section_question(f"gap_{s['gaps'][0]}", language) if s["gaps"] \
+            else section_question("closing", language)
+    section = SECTION_IDS[s["index"]] if s["index"] < len(SECTIONS) else "gaps"
     return section_question(section, language)
 
 
@@ -301,41 +339,54 @@ def _finish_turn(s: dict, result: dict) -> dict:
     }
 
 
-# What "recorded with confidence" means, field by field. These are deliberately mechanical:
-# a spoken email that never reached an "@" or a phone that lost digits is exactly the kind
-# of thing the candidate should be given one more chance to correct before printing.
 def _said_by_candidate(s: dict) -> str:
     """Everything the candidate actually said this session, lower-cased."""
     return " ".join(m["content"] for m in s["messages"]
                     if m["role"] == "user" and not m["content"].startswith("(")).lower()
 
 
+# What "recorded with confidence" means, field by field. These are deliberately mechanical:
+# a spoken email that never reached an "@" or a phone that lost digits is exactly the kind
+# of thing the candidate should be given one more chance to correct before printing.
+#
+# Each gap carries a key and an English description. The key selects the scripted question
+# (localized, and already in the speech cache); the description is what the model is told
+# to ask about when it is phrasing the question itself.
+GAP_DESCRIPTIONS = {
+    "name": "their full name, first and last, spelled out letter by letter.",
+    "email": "their email address, spelled out letter by letter.",
+    "phone": "their 10-digit mobile number, digit by digit.",
+    "target_role": "the job profile or role they are applying for.",
+    "education": "their highest qualification, the institution and the year.",
+    "experience": "their work experience, current job status, or any project they can show.",
+    "skills": "the main skills they would want on their resume.",
+    "location": "the city they live in, and its 6-digit PIN code.",
+}
+
+
 def _profile_gaps(profile: dict) -> list[str]:
     gaps = []
     name = (profile.get("name") or "").strip()
     if len(name.split()) < 2:
-        gaps.append("their full name, first and last, spelled out letter by letter.")
+        gaps.append("name")
     email = (profile.get("email") or "").strip()
     if "@" not in email or "." not in email.split("@")[-1]:
-        gaps.append("their email address, spelled out letter by letter.")
+        gaps.append("email")
     digits = "".join(c for c in (profile.get("phone") or "") if c.isdigit())
     if len(digits) not in (10, 12):     # 10 digits, or 12 with the 91 country code
-        gaps.append("their 10-digit mobile number, digit by digit.")
+        gaps.append("phone")
     if not (profile.get("target_role") or "").strip():
-        gaps.append("the job profile or role they are applying for.")
+        gaps.append("target_role")
     if not profile.get("education"):
-        gaps.append("their highest qualification, the institution and the year.")
+        gaps.append("education")
     if not profile.get("experience") and not profile.get("projects"):
-        gaps.append("their work experience, current job status, or any project they can show.")
+        gaps.append("experience")
     if not profile.get("skills"):
-        gaps.append("the main skills they would want on their resume.")
+        gaps.append("skills")
     # A PIN is the test, not a non-empty string: asked for a location it never heard, the
-    # extractor will happily infer a plausible city from the college name. A 6-digit PIN
-    # is something only the candidate can supply, and facts.py validates it against the
-    # postal directory afterwards.
-    location = (profile.get("location") or "").strip()
-    if not re.search(r"\b\d{6}\b", location):
-        gaps.append("the city they live in, and its 6-digit PIN code.")
+    # extractor will happily infer a plausible city from the college name.
+    if not re.search(r"\b\d{6}\b", (profile.get("location") or "")):
+        gaps.append("location")
     return gaps[:MAX_GAP_QUESTIONS]
 
 
@@ -360,10 +411,9 @@ async def enter_gap_phase(s: dict) -> dict:
     # asked for one it never heard, the extractor infers a plausible city from the college
     # name - it produced "Rajpura, 140401" on one pass and "Rajpura" on the next from the
     # same transcript. A resume must not carry an address nobody gave.
-    pin_question = "the city they live in, and its 6-digit PIN code."
-    gaps = [gap for gap in gaps if gap != pin_question]
+    gaps = [gap for gap in gaps if gap != "location"]
     if not re.search(r"\b\d{6}\b", _said_by_candidate(s)):
-        gaps.insert(0, pin_question)
+        gaps.insert(0, "location")
     s["gaps"] = gaps[:MAX_GAP_QUESTIONS]
     _save(s)
     return {"gaps": len(s["gaps"]), "done": not s["gaps"]}
@@ -397,6 +447,9 @@ async def _build_profile(s: dict) -> dict:
         f"{'Interviewer' if m['role'] == 'assistant' else 'Candidate'}: {m['content']}"
         for m in real
     )
+    # Translated first when it is not already English: extracting straight from Devanagari
+    # or Gurmukhi silently changes numbers. See english_transcript().
+    transcript = await english_transcript(transcript)
     try:
         profile = await llm_extract(
             [{"role": "user", "content": f"Interview transcript:\n\n{transcript}"}],
@@ -413,6 +466,8 @@ async def _build_profile(s: dict) -> dict:
     profile = await asyncio.to_thread(apply_facts, profile)
     session_dir = s["dir"]
     (session_dir / "profile.json").write_text(json.dumps(profile, indent=2, ensure_ascii=False))
+    storage.save_session(session_dir.name, profile=profile,
+                         corrections=profile.get("_corrections", []))
     return profile
 
 
@@ -423,12 +478,14 @@ def _build_documents(s: dict, profile: dict) -> dict:
         (session_dir / "resume.docx").write_bytes(render_resume_docx(profile))
     except Exception as e:
         raise HTTPException(500, f"Could not generate the resume document: {e}")
-    return {
+    files = {
         "session_id": session_dir.name,
         "pdf_url": f"/auto/resume/{session_dir.name}.pdf",
         "docx_url": f"/auto/resume/{session_dir.name}.docx",
         "saved": True,
     }
+    storage.save_session(session_dir.name, files=files)
+    return files
 
 
 def _print_saved_pdf(s: dict) -> dict:
@@ -513,8 +570,10 @@ async def auto_print(payload: dict):
             emailed = True
         except RuntimeError as exc:
             email_error = str(exc)
-    return {**result, "emailed": emailed, "email_error": email_error,
-            "email_to": address if emailed else ""}
+    delivery = {**result, "emailed": emailed, "email_error": email_error,
+                "email_to": address if emailed else ""}
+    storage.save_session(s["dir"].name, delivery=delivery, completed_at=time.time())
+    return delivery
 
 
 @router.post("/finish")

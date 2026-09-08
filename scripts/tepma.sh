@@ -24,6 +24,12 @@ mkdir -p "$LOG_DIR"
 # Marks an Ollama that this script started. Anything already running belongs to the user,
 # and `stop` unloads our models from it rather than killing their process.
 OLLAMA_OWNED="$LOG_DIR/.ollama-started-by-tepma"
+MONGO_OWNED="$LOG_DIR/.mongo-started-by-tepma"
+
+# MongoDB keeps its data inside the project, so a new machine needs no system service and
+# no sudo - and removing the checkout removes the database with it.
+MONGO_PORT="${MONGO_PORT:-27017}"
+MONGO_DB_PATH="$PROJECT_DIR/data/mongo"
 
 # The models come from .env when it sets them, so a fine-tuned build is pulled and freed
 # by the same commands as the defaults.
@@ -32,6 +38,8 @@ LLM_MODEL="${LLM_MODEL:-$(env_value LLM_MODEL)}";   LLM_MODEL="${LLM_MODEL:-qwen
 TURN_MODEL="${TURN_MODEL:-$(env_value TURN_MODEL)}"; TURN_MODEL="${TURN_MODEL:-qwen3:4b-instruct}"
 
 ollama_up()  { curl -sf --max-time 1 "http://127.0.0.1:11434/api/tags" >/dev/null 2>&1; }
+mongo_up()   { curl -sf --max-time 1 "http://127.0.0.1:$MONGO_PORT" >/dev/null 2>&1 \
+               || nc -z 127.0.0.1 "$MONGO_PORT" >/dev/null 2>&1; }
 server_up()  { curl -sf --max-time 1 "http://$HOST:$PORT/" >/dev/null 2>&1; }
 
 wait_for() {  # wait_for <name> <predicate> <seconds>
@@ -56,6 +64,21 @@ start() {
         wait_for ollama ollama_up 60
     fi
 
+    if command -v mongod >/dev/null 2>&1; then
+        if mongo_up; then
+            echo "  - mongodb already running"
+        else
+            echo "  - starting mongodb"
+            mkdir -p "$MONGO_DB_PATH"
+            nohup mongod --dbpath "$MONGO_DB_PATH" --port "$MONGO_PORT" \
+                --bind_ip 127.0.0.1 > "$LOG_DIR/mongo.log" 2>&1 &
+            touch "$MONGO_OWNED"
+            wait_for mongodb mongo_up 30 || echo "  ! continuing without it - see $LOG_DIR/mongo.log"
+        fi
+    else
+        echo "  - mongodb not installed; records will be kept on disk only"
+    fi
+
     if server_up; then
         echo "  - voice server already running on $HOST:$PORT"
     else
@@ -77,6 +100,14 @@ stop() {
         && echo "  - voice server on $HOST:$PORT stopped" \
         || echo "  - no voice server running on $HOST:$PORT"
     pkill -f "cloudflared tunnel" 2>/dev/null && echo "  - tunnel stopped" || true
+
+    if [ -f "$MONGO_OWNED" ]; then
+        pkill -f "mongod --dbpath $MONGO_DB_PATH" 2>/dev/null && echo "  - mongodb stopped" \
+            || echo "  - mongodb was not running"
+        rm -f "$MONGO_OWNED"
+    elif mongo_up; then
+        echo "  - mongodb left running (it was not started by this script)"
+    fi
 
     if [ -f "$OLLAMA_OWNED" ]; then
         pkill -f "ollama serve" 2>/dev/null && echo "  - ollama stopped" \
@@ -103,6 +134,12 @@ status() {
     [ -x "$VENV/python" ] && echo "  python env    installed" \
                           || echo "  python env    MISSING - run: scripts/tepma.sh setup"
     ollama_up && echo "  ollama        running" || echo "  ollama        stopped"
+    if command -v mongod >/dev/null 2>&1; then
+        mongo_up && echo "  mongodb       running on 127.0.0.1:$MONGO_PORT" \
+                 || echo "  mongodb       stopped"
+    else
+        echo "  mongodb       not installed (records kept on disk only)"
+    fi
     server_up && echo "  voice server  running on http://$HOST:$PORT/assistant" \
                || echo "  voice server  stopped"
     if ollama_up; then
@@ -178,6 +215,14 @@ $model "*) echo "  - $model already pulled" ;;
             *) echo "  - pulling $model (several GB, once)"; ollama pull "$model" ;;
         esac
     done
+
+    if command -v mongod >/dev/null 2>&1; then
+        mkdir -p "$MONGO_DB_PATH"
+        echo "  - mongodb found; its data will live in data/mongo"
+    else
+        echo "  - mongodb not installed (optional). Records will be kept on disk only."
+        echo "    To add it:  brew tap mongodb/brew && brew install mongodb-community"
+    fi
 
     # Whisper and Kokoro download on first use and would otherwise make the first
     # interview the slow one. This also fills the speech cache for the greeting.

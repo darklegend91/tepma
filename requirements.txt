@@ -17,3 +17,6 @@ python-docx
 # Used to extract a single face from a .ttc font collection when a resume needs an
 # Indic script and no plain .ttf is installed.
 fonttools
+# Records interviews and generated documents. The app runs without a database,
+# keeping records on disk, so a missing MongoDB is not fatal.
+pymongo

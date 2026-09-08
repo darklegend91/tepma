@@ -15,6 +15,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response
 
+import storage
 from assistant_script import SCRIPT
 from document_render import render_application_docx, render_application_pdf
 from engines import llm_extract, synthesize_wav
@@ -123,9 +124,12 @@ def _public_state(session: dict) -> dict:
 
 
 def _save(session: dict):
+    """Disk first (the workflow recovers from it), then MongoDB as the queryable record."""
+    state = _public_state(session)
     (session["dir"] / "workflow.json").write_text(
-        json.dumps(_public_state(session), ensure_ascii=False, indent=2)
+        json.dumps(state, ensure_ascii=False, indent=2)
     )
+    storage.save_document(session["session_id"], **state)
 
 
 def _session(session_id: str) -> dict:

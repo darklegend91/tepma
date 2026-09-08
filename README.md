@@ -362,6 +362,35 @@ See **`finetune/GUIDE.md`** for the full course. Short version:
 .venv/bin/python finetune/eval_model.py --model qwen3:8b # baseline to beat
 ```
 
+## The database (MongoDB)
+
+Interview records go to MongoDB: one document per interview in `sessions` (language, phase,
+the whole transcript, the extracted profile, the generated file URLs and what happened at
+delivery) and one per generated application in `documents`.
+
+`scripts/tepma.sh start` starts `mongod` for you with its data inside the project at
+`data/mongo`, so a new machine needs no system service and no `sudo`, and deleting the
+checkout deletes the database with it. Point `MONGO_URL` at any other server if you would
+rather run one centrally.
+
+**The kiosk does not depend on it.** Every record is written to `data/sessions/` first —
+that is what a refresh or a crash recovers from — and Mongo is the queryable layer on top.
+If the database is down, interviews still run, resumes still print, and the records are
+still on disk. A failed connection opens a circuit breaker for 30 seconds so that a stopped
+`mongod` does not add the driver's connection timeout to every turn of every interview;
+this is verified by running a full interview with `mongod` killed.
+
+```bash
+curl -s localhost:8000/system/database        # connected? how many records?
+```
+
+```bash
+mongosh tepma --eval 'db.sessions.find({}, {transcript: 0}).sort({created_at: -1}).limit(5)'
+```
+
+MongoDB is optional: if `mongod` is not installed, `setup` says so and everything works
+exactly as before, on disk only.
+
 ## Where data is saved
 
 - `data/sessions/<timestamp>/` — per-interview `transcript.json`, `profile.json`, `resume.pdf`
@@ -390,6 +419,7 @@ generation, PDF/DOCX rendering, refusal of official-document generation, and the
 - `profile_schema.py` — resume JSON schema, extraction prompt, and `romanize_profile()`
 - `assistant_script.py` — every scripted line the kiosk speaks, in all three languages
 - `mailer.py` — best-effort emailing of the finished resume
+- `storage.py` — MongoDB records, with a circuit breaker so an outage cannot stall the kiosk
 - `scripts/tepma.sh` — setup / start / stop / unload / status / tunnel
 - `scripts/prepare_models.py` — downloads the models and warms the speech cache
 - `resume_pdf.py` — profile JSON → resume PDF

@@ -12,7 +12,8 @@ from fastapi.responses import FileResponse, Response
 
 from engines import llm_chat, llm_extract, synthesize_wav
 from facts import apply_facts, date_context
-from profile_schema import EXTRACTOR_PROMPT, PROFILE_SCHEMA, romanize_profile
+from profile_schema import (EXTRACTOR_PROMPT, PROFILE_SCHEMA, english_transcript,
+                            romanize_profile)
 from resume_docx import render_resume_docx
 from resume_pdf import render_resume
 from ws_stt import live_transcribe_socket
@@ -76,6 +77,9 @@ async def interview_finish(payload: dict):
         f"{'Interviewer' if m['role'] == 'assistant' else 'Candidate'}: {m['content']}"
         for m in messages
     )
+    # Translated first when it is not already English: extracting straight from Devanagari
+    # or Gurmukhi silently changes numbers. See english_transcript().
+    transcript = await english_transcript(transcript)
     profile = await llm_extract(
         [{"role": "user", "content": f"Interview transcript:\n\n{transcript}"}],
         EXTRACTOR_PROMPT + date_context(),

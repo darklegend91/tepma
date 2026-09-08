@@ -202,3 +202,44 @@ async def romanize_profile(profile: dict) -> dict:
         for source, english in mapping.items()
     )
     return profile
+
+
+# Extraction reads a Hindi or Punjabi transcript badly enough to change what it says. Asked
+# to build a profile straight from Gurmukhi, qwen3:8b turned "ਲੇਟੈਂਸੀ ਚਾਲੀ ਪ੍ਰਤੀਸ਼ਤ ਘਟੀ" (40%)
+# into 15% - twice out of two runs - while translating the transcript first and extracting
+# from the English got it right both times. A wrong number on a printed resume is silent,
+# plausible-looking damage, so the translation pass is worth the extra call.
+TRANSLATE_PROMPT = """Translate this interview transcript into English, line by line.
+
+- Keep every number, digit, percentage, year and identifier EXACTLY as spoken. A number
+  word becomes its digits unchanged: "ਚਾਲੀ" and "चालीस" are 40, "ਬਾਰਾਂ ਹਜ਼ਾਰ" is 12,000.
+- Transliterate names of people, places and institutions instead of translating them:
+  "ਆਦਿਤਿਆ ਪਠਾਨੀਆ" -> "Aditya Pathania", "ਰਾਜਪੁਰਾ" -> "Rajpura".
+- Keep the "Interviewer:" and "Candidate:" labels and the line structure.
+- Add nothing, drop nothing, and never guess at something that was not said."""
+
+TRANSLATE_SCHEMA = {
+    "type": "object",
+    "properties": {"english": {"type": "string"}},
+    "required": ["english"],
+}
+
+
+async def english_transcript(transcript: str) -> str:
+    """The transcript in English, or the original if translation fails.
+
+    Only called when the transcript is not already Latin - an English interview pays
+    nothing for this. A failure returns the original text: extracting from Gurmukhi is
+    worse than extracting from English, but it is far better than losing the interview.
+    """
+    from engines import llm_extract
+
+    if not _INDIC_SCRIPTS.search(transcript):
+        return transcript
+    try:
+        result = await llm_extract([{"role": "user", "content": transcript}],
+                                   TRANSLATE_PROMPT, TRANSLATE_SCHEMA)
+    except Exception:
+        return transcript
+    english = (result.get("english") or "").strip()
+    return english or transcript

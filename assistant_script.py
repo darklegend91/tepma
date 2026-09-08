@@ -130,6 +130,49 @@ SECTION_QUESTIONS: dict[str, dict[str, str]] = {
         "hi": "आखिरी एक बात जो मुझे आपसे चाहिए।",
         "pa": "ਆਖ਼ਰੀ ਇੱਕ ਗੱਲ ਜੋ ਮੈਨੂੰ ਤੁਹਾਡੇ ਤੋਂ ਚਾਹੀਦੀ ਹੈ।",
     },
+    # The closing gap pass. Each of these matches a key in _profile_gaps(); they exist
+    # because "one last thing I need" does not tell the candidate WHAT to say, and the
+    # gap itself is an English description written for the model, not for a person.
+    "gap_name": {
+        "en": "I did not catch your full name. Could you say your first and last name, spelling them out?",
+        "hi": "मैं आपका पूरा नाम ठीक से नहीं समझ पाया। कृपया अपना पहला और आखिरी नाम, अक्षर-अक्षर करके बताइए।",
+        "pa": "ਮੈਂ ਤੁਹਾਡਾ ਪੂਰਾ ਨਾਮ ਠੀਕ ਤਰ੍ਹਾਂ ਨਹੀਂ ਸਮਝ ਸਕਿਆ। ਕਿਰਪਾ ਕਰਕੇ ਆਪਣਾ ਪਹਿਲਾ ਅਤੇ ਆਖ਼ਰੀ ਨਾਮ ਅੱਖਰ-ਅੱਖਰ ਕਰਕੇ ਦੱਸੋ।",
+    },
+    "gap_email": {
+        "en": "I did not get your email address correctly. Could you spell it out, letter by letter?",
+        "hi": "मुझे आपका ईमेल पता ठीक से नहीं मिला। कृपया उसे एक-एक अक्षर करके बताइए।",
+        "pa": "ਮੈਨੂੰ ਤੁਹਾਡਾ ਈਮੇਲ ਪਤਾ ਠੀਕ ਨਹੀਂ ਮਿਲਿਆ। ਕਿਰਪਾ ਕਰਕੇ ਉਸਨੂੰ ਇੱਕ-ਇੱਕ ਅੱਖਰ ਕਰਕੇ ਦੱਸੋ।",
+    },
+    "gap_phone": {
+        "en": "I did not get your mobile number correctly. Could you say all ten digits, one by one?",
+        "hi": "मुझे आपका मोबाइल नंबर ठीक से नहीं मिला। कृपया दसों अंक एक-एक करके बताइए।",
+        "pa": "ਮੈਨੂੰ ਤੁਹਾਡਾ ਮੋਬਾਈਲ ਨੰਬਰ ਠੀਕ ਨਹੀਂ ਮਿਲਿਆ। ਕਿਰਪਾ ਕਰਕੇ ਦਸੇ ਅੰਕ ਇੱਕ-ਇੱਕ ਕਰਕੇ ਦੱਸੋ।",
+    },
+    "gap_target_role": {
+        "en": "Which job or role should I put on your resume?",
+        "hi": "मैं आपके रिज़्यूमे पर कौन सी नौकरी या पद लिखूँ?",
+        "pa": "ਮੈਂ ਤੁਹਾਡੇ ਰਿਜ਼ਿਊਮੇ ਉੱਤੇ ਕਿਹੜੀ ਨੌਕਰੀ ਜਾਂ ਅਹੁਦਾ ਲਿਖਾਂ?",
+    },
+    "gap_education": {
+        "en": "What is your highest qualification, from which institution, and in which year?",
+        "hi": "आपकी सबसे बड़ी योग्यता क्या है, किस संस्थान से, और किस वर्ष में?",
+        "pa": "ਤੁਹਾਡੀ ਸਭ ਤੋਂ ਵੱਡੀ ਯੋਗਤਾ ਕੀ ਹੈ, ਕਿਸ ਸੰਸਥਾ ਤੋਂ, ਅਤੇ ਕਿਹੜੇ ਸਾਲ ਵਿੱਚ?",
+    },
+    "gap_experience": {
+        "en": "Could you tell me about any work, internship or project you can show?",
+        "hi": "क्या आप किसी काम, इंटर्नशिप या प्रोजेक्ट के बारे में बता सकते हैं?",
+        "pa": "ਕੀ ਤੁਸੀਂ ਕਿਸੇ ਕੰਮ, ਇੰਟਰਨਸ਼ਿਪ ਜਾਂ ਪ੍ਰੋਜੈਕਟ ਬਾਰੇ ਦੱਸ ਸਕਦੇ ਹੋ?",
+    },
+    "gap_skills": {
+        "en": "Which skills would you like on your resume?",
+        "hi": "आप अपने रिज़्यूमे पर कौन से कौशल लिखवाना चाहेंगे?",
+        "pa": "ਤੁਸੀਂ ਆਪਣੇ ਰਿਜ਼ਿਊਮੇ ਉੱਤੇ ਕਿਹੜੇ ਹੁਨਰ ਲਿਖਵਾਉਣਾ ਚਾਹੋਗੇ?",
+    },
+    "gap_location": {
+        "en": "Which city do you live in, and what is its 6-digit PIN code?",
+        "hi": "आप किस शहर में रहते हैं, और उसका 6 अंकों का पिन कोड क्या है?",
+        "pa": "ਤੁਸੀਂ ਕਿਹੜੇ ਸ਼ਹਿਰ ਵਿੱਚ ਰਹਿੰਦੇ ਹੋ, ਅਤੇ ਉਸਦਾ 6 ਅੰਕਾਂ ਦਾ ਪਿੰਨ ਕੋਡ ਕੀ ਹੈ?",
+    },
     "closing": {
         "en": "Thank you, that is everything I need. Your profile is being prepared now.",
         "hi": "धन्यवाद, मुझे सारी जानकारी मिल गई। आपका प्रोफ़ाइल अभी तैयार किया जा रहा है।",

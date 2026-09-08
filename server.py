@@ -55,6 +55,14 @@ async def assistant_page():
     return FileResponse(STATIC / "assistant.html")
 
 
+@app.get("/system/database")
+def database_status():
+    """Whether MongoDB is connected, and how much it holds."""
+    import storage
+
+    return storage.status()
+
+
 @app.get("/system/printer")
 def printer_status():
     """Return the default printer used by the app's lpr print actions."""
@@ -88,3 +96,8 @@ async def warm_speech_cache():
         print("Speech cache warm.")
 
     asyncio.create_task(warm())
+
+    # Indexes are created here rather than by a migration step: the kiosk is expected to
+    # run against whatever Mongo happens to be there, including none at all.
+    import storage
+    storage.ensure_indexes()
