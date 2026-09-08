@@ -6,6 +6,7 @@ best-effort printing.
 """
 import asyncio
 import json
+import os
 import re
 import subprocess
 import time
@@ -493,10 +494,17 @@ CHOICE_SCHEMA = {
 }
 
 
+# What the kiosk offers. The document branch is off for now: the machine is being run as a
+# resume kiosk, and a spoken "resume or document?" question that only has one real answer
+# is a question worth not asking. Set ENABLE_DOCUMENTS=1 to bring it back - nothing about
+# the document workflow was removed, it is simply not offered.
+ENABLE_DOCUMENTS = os.getenv("ENABLE_DOCUMENTS", "").strip().lower() in {"1", "true", "yes"}
+
+
 @router.get("/script")
 async def assistant_script():
     """The scripted lines the page speaks. Served so the page and the speech cache agree."""
-    return {"script": SCRIPT}
+    return {"script": SCRIPT, "features": {"documents": ENABLE_DOCUMENTS}}
 
 
 @router.post("/choice")

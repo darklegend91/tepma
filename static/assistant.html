@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TePMA — Document or Resume</title>
+<title>TePMA — Resume Interview</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/static/style.css">
 <style>
@@ -61,21 +61,20 @@
     <div class="mark">🎙️</div>
     <div class="big">TePMA Assistant</div>
     <div class="small">Tap anywhere to begin, then just talk. I will greet you, ask which
-      language you prefer, and ask whether you want a résumé or a document.</div>
+      language you prefer, and then interview you for your résumé.</div>
     <div class="small">छूकर शुरू करें · ਛੂਹ ਕੇ ਸ਼ੁਰੂ ਕਰੋ</div>
   </div>
 
   <h1>TePMA Assistant</h1>
-  <nav><a href="/">Resume interview</a> &nbsp;|&nbsp; <a href="/docs-assistant">Document library</a> &nbsp;|&nbsp; <a href="/test">Voice test</a></nav>
 
   <section class="card" id="workflowCard">
     <div class="workflow-head">
       <h2 id="workflowTitle">Assistant</h2>
     </div>
     <div class="steps">
-      <span class="step" id="stepChoose">Choose</span>
-      <span class="step" id="stepCollect">Collect details</span>
-      <span class="step" id="stepCreate">Find / create</span>
+      <span class="step" id="stepChoose">Language</span>
+      <span class="step" id="stepCollect">Interview</span>
+      <span class="step" id="stepCreate">Build profile</span>
       <span class="step" id="stepSave">Save PDF</span>
       <span class="step" id="stepPrint">Print</span>
     </div>
@@ -115,11 +114,15 @@ const ui = Object.fromEntries([
 // which is the same copy its speech cache was warmed with, so the greeting plays from disk
 // instead of being synthesized again for every person who walks up.
 let SCRIPT = {};
+// Which branches the kiosk offers. Resume-only for now; the server decides.
+let FEATURES = {documents: false};
 
 async function loadScript() {
   const response = await fetch("/assistant/api/script");
   if (!response.ok) throw new Error("Could not load the assistant's script");
-  SCRIPT = (await response.json()).script || {};
+  const data = await response.json();
+  SCRIPT = data.script || {};
+  FEATURES = data.features || FEATURES;
 }
 
 // Language and intent are one-word answers, so they are matched here first: keyword
@@ -315,13 +318,19 @@ async function runSession() {
     state.language = language || "en";     // a broken microphone must not deadlock a kiosk
     setProgress(8, "Choosing what to create");
 
-    let intent = await askIntent();
-    while (state.running && intent && intent !== "stop") {
-      if (intent === "resume") await runResume();
-      else await runDocument();
-      intent = await askIntent(true);
+    if (FEATURES.documents) {
+      let intent = await askIntent();
+      while (state.running && intent && intent !== "stop") {
+        if (intent === "resume") await runResume();
+        else await runDocument();
+        intent = await askIntent(true);
+      }
+      await speakScript("goodbye");
+    } else {
+      // Resume-only: the interview starts straight after the language is chosen, and the
+      // closing line the résumé branch already says is the end of the session.
+      await runResume();
     }
-    await speakScript("goodbye");
     status("Finished.");
   } catch (error) {
     if (error !== STOPPED) {
@@ -409,7 +418,12 @@ async function runResume() {
   setProgress(92, "Emailing and printing");
   const delivery = await api("/auto/print", {session_id: state.sessionId});
   presentResult({...profile, ...files, ...delivery, title: "Your résumé"});
-  await speakScript(delivery.emailed ? "finishedEmailed" : "finishedPrintOnly");
+  // Say what actually happened. Telling someone to collect a page from a printer that is
+  // not connected is the one thing worse than saying the printer is down.
+  const closing = delivery.emailed
+    ? (delivery.printed ? "finishedEmailed" : "finishedEmailedNoPrint")
+    : (delivery.printed ? "finishedPrintOnly" : "finishedSavedOnly");
+  await speakScript(closing);
 }
 
 function showInterviewProgress(turn) {

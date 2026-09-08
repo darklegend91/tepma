@@ -22,6 +22,18 @@ SCRIPT: dict[str, dict[str, str]] = {
         "hi": "आपका ऑनलाइन प्रोफ़ाइल बन गया है और आपके ईमेल पर भेज दिया गया है। छपा हुआ रिज़्यूमे आप प्रिंटर से ले सकते हैं। धन्यवाद।",
         "pa": "ਤੁਹਾਡੀ ਆਨਲਾਈਨ ਪ੍ਰੋਫ਼ਾਈਲ ਬਣ ਗਈ ਹੈ ਅਤੇ ਤੁਹਾਡੇ ਈਮੇਲ ਉੱਤੇ ਭੇਜ ਦਿੱਤੀ ਗਈ ਹੈ। ਛਪਿਆ ਹੋਇਆ ਰਿਜ਼ਿਊਮੇ ਤੁਸੀਂ ਪ੍ਰਿੰਟਰ ਤੋਂ ਲੈ ਸਕਦੇ ਹੋ। ਧੰਨਵਾਦ।"
     },
+    "finishedEmailedNoPrint": {
+        "en": "Your online profile has been made and sent to your email. The printer is not available right now, so please use the copy in your email. Thank you.",
+        "hi": "आपका ऑनलाइन प्रोफ़ाइल बन गया है और आपके ईमेल पर भेज दिया गया है। प्रिंटर अभी उपलब्ध नहीं है, इसलिए कृपया ईमेल वाली कॉपी का उपयोग करें। धन्यवाद।",
+        "pa": "ਤੁਹਾਡੀ ਆਨਲਾਈਨ ਪ੍ਰੋਫ਼ਾਈਲ ਬਣ ਗਈ ਹੈ ਅਤੇ ਤੁਹਾਡੇ ਈਮੇਲ ਉੱਤੇ ਭੇਜ ਦਿੱਤੀ ਗਈ ਹੈ। ਪ੍ਰਿੰਟਰ ਹੁਣ ਉਪਲਬਧ ਨਹੀਂ ਹੈ, ਇਸ ਲਈ ਕਿਰਪਾ ਕਰਕੇ ਈਮੇਲ ਵਾਲੀ ਕਾਪੀ ਵਰਤੋ। ਧੰਨਵਾਦ।",
+    },
+    # Neither sent nor printed. The kiosk must not tell someone to collect a page from a
+    # printer that is not connected - the resume is on the screen and nowhere else.
+    "finishedSavedOnly": {
+        "en": "Your online profile has been made and is ready on the screen. The printer is not available right now, so please save or download it from here. Thank you.",
+        "hi": "आपका ऑनलाइन प्रोफ़ाइल बन गया है और स्क्रीन पर तैयार है। प्रिंटर अभी उपलब्ध नहीं है, इसलिए कृपया इसे यहीं से सेव या डाउनलोड कर लीजिए। धन्यवाद।",
+        "pa": "ਤੁਹਾਡੀ ਆਨਲਾਈਨ ਪ੍ਰੋਫ਼ਾਈਲ ਬਣ ਗਈ ਹੈ ਅਤੇ ਸਕ੍ਰੀਨ ਉੱਤੇ ਤਿਆਰ ਹੈ। ਪ੍ਰਿੰਟਰ ਹੁਣ ਉਪਲਬਧ ਨਹੀਂ ਹੈ, ਇਸ ਲਈ ਕਿਰਪਾ ਕਰਕੇ ਇਸਨੂੰ ਇੱਥੋਂ ਹੀ ਸੇਵ ਜਾਂ ਡਾਊਨਲੋਡ ਕਰ ਲਵੋ। ਧੰਨਵਾਦ।",
+    },
     "finishedPrintOnly": {
         "en": "Your online profile has been made. You can collect the printed resume from the printer. Thank you.",
         "hi": "आपका ऑनलाइन प्रोफ़ाइल बन गया है। छपा हुआ रिज़्यूमे आप प्रिंटर से ले सकते हैं। धन्यवाद।",
