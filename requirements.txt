@@ -1,4 +1,7 @@
 fastapi
+# The ASGI server the app actually runs under. Without it a fresh clone installs
+# cleanly and then fails at "uvicorn: command not found".
+uvicorn[standard]
 python-dotenv
 python-multipart
 faster-whisper
@@ -6,7 +9,11 @@ faster-whisper
 # where STT_BACKEND=auto falls back to faster-whisper.
 mlx-whisper; sys_platform == "darwin" and platform_machine == "arm64"
 kokoro
-soundfile 
-httpx 
+soundfile
+numpy
+httpx
 fpdf2
 python-docx
+# Used to extract a single face from a .ttc font collection when a resume needs an
+# Indic script and no plain .ttf is installed.
+fonttools

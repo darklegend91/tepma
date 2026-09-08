@@ -17,23 +17,33 @@ Everything runs on your own machine — no cloud APIs:
 
 ## First-time setup
 
+Install Ollama, then run one command:
+
 ```bash
-# 1. Install Ollama (if not installed) and pull both models
-brew install ollama
-ollama pull qwen3:8b            # profile extraction
-ollama pull qwen3:4b-instruct   # live interview questions
-
-# 2. Create the venv and install dependencies
-python3.11 -m venv .venv
-.venv/bin/pip install -r requirements.txt "uvicorn[standard]"
-
-# 3. (Optional) regenerate the sample documents
-.venv/bin/python make_sample_docs.py
+brew install ollama        # macOS. Linux: curl -fsSL https://ollama.com/install.sh | sh
 ```
 
-Whisper and Kokoro (~330 MB) download automatically on first use, then work offline. On
-Apple Silicon the Whisper download is `large-v3` (~3 GB) and takes a couple of minutes the
-first time; elsewhere it is `small` (~500 MB).
+```bash
+./scripts/tepma.sh setup
+```
+
+That creates the virtual environment, installs the Python dependencies, pulls both Ollama
+models, downloads the Whisper and Kokoro weights, and pre-synthesizes every line the kiosk
+speaks so the first visitor is greeted instantly rather than waiting on a cold model. It is
+safe to run again at any time - everything it does is cached, so a second run just verifies
+the machine is ready.
+
+Expect ~10 GB of downloads the first time: qwen3:8b (5.2 GB), qwen3:4b-instruct (2.5 GB),
+Whisper (3 GB `large-v3` on Apple Silicon, 500 MB `small` elsewhere) and Kokoro (330 MB).
+After that the whole thing runs offline.
+
+Setup also copies `.env.example` to `.env` if you do not have one. Every setting has a
+working default, so you only need to edit it to change models or to enable email.
+
+```bash
+# Optional: regenerate the sample documents for the document assistant
+.venv/bin/python make_sample_docs.py
+```
 
 ## Start the project
 
@@ -47,10 +57,17 @@ One command starts both the LLM and the web server and waits until each is answe
 ./scripts/tepma.sh stop
 ```
 
-`status` shows what is running and which models are loaded; `restart` does both. The port
-defaults to 8000 — override it with `PORT=8080 ./scripts/tepma.sh start`. Both services log
-to `logs/`. Starting twice is safe: an already-running Ollama is reused rather than
-launched again (a second `ollama serve` would fail with `address already in use`).
+`stop` also frees the models from memory (~7 GB). If Ollama was already running before you
+started - yours, or another project's - it is left alone and only TePMA's models are
+evicted; if this script started it, it is stopped too. To free the memory without stopping
+the server, use `./scripts/tepma.sh unload`.
+
+`status` shows what is installed, what is running, and which models are loaded; `restart`
+does both. The port defaults to 8000 — override it with `PORT=8080 ./scripts/tepma.sh start`.
+`stop` is scoped to the same host and port, so a second checkout running on another port is
+left untouched. Both services log to `logs/`. Starting twice is safe: an already-running
+Ollama is reused rather than launched again (a second `ollama serve` would fail with
+`address already in use`).
 
 Then open <http://localhost:8000/assistant> in your browser (use a real browser and allow
 the microphone). The first voice reply is slow while models load; after that it is faster.
@@ -68,6 +85,11 @@ ollama serve
 .venv/bin/uvicorn server:app --host 127.0.0.1 --port 8000
 ```
 
+```bash
+# Free the models from memory without stopping anything else
+ollama stop qwen3:8b && ollama stop qwen3:4b-instruct
+```
+
 </details>
 
 Pages:
@@ -80,10 +102,18 @@ Pages:
 
 ### The unified flow (`/assistant`)
 
-The first screen asks **I want a document** or **I want a résumé** and offers English,
-Hindi, and Punjabi conversation modes. Every answer can be typed or spoken. Voice capture
-is submitted after three seconds of silence or immediately with **Stop listening & send
-answer**.
+Nothing is typed anywhere: the whole session is spoken. One tap on the idle screen (browsers
+refuse microphone access and audio playback until the page has been interacted with once),
+and after that the only control is **Stop**.
+
+```
+greet in English, Hindi and Punjabi -> "which language?" -> "résumé or a document?"
+```
+
+The greeting is scripted rather than generated, and pre-synthesized into a speech cache at
+startup, so it plays from disk instead of being spoken again for every visitor. Answers are
+submitted after three seconds of silence. Silence three times in a row ends the session and
+returns the kiosk to its idle screen for the next person.
 
 Document branch:
 
@@ -98,12 +128,27 @@ Generated applications are based only on details supplied by the user. Identity 
 marksheets, certificates, licences, prescriptions, and government/court-issued records are
 not generated. The final application is saved even when no printer is connected.
 
-Résumé branch:
+Résumé branch - a fixed sequence, because a resume has fields that are not optional:
 
 ```
-name -> target role -> education -> experience -> projects -> skills
-     -> achievements -> contact -> location/PIN -> PDF + Word -> optional print
+name -> phone -> email -> target role -> education -> experience and current status
+     -> projects  ->  gap pass  ->  PDF + Word  ->  email + print
 ```
+
+The order and the progression are the **server's**, not the model's: any substantive answer
+moves the interview on, and a refusal or a blank buys one re-ask before it moves on anyway.
+The model only phrases each question, in the candidate's language. `SECTIONS` in
+`routes_auto.py` is the list.
+
+The **gap pass** at the end is what catches what is missing. It extracts a draft profile and
+re-asks only what would print blank or malformed — a name without a surname, an email with
+no `@`, a phone with the wrong number of digits. The PIN code is always asked unless the
+candidate already said one, and that test reads the *transcript* rather than the extracted
+profile: no section collects a location, and asked for one it never heard, the extractor
+will infer a plausible city from the college name.
+
+A Hindi or Punjabi interview still produces an **English** resume: `romanize_profile()`
+transliterates names and translates the rest before the Latin-only facts layer runs.
 
 Both branches show progress at each stage. A red/green status bar at the bottom reports the
 current default printer. If it says **Printer: Not connected**, the PDF is saved and
@@ -118,10 +163,12 @@ greet -> listen -> answer -> next question -> ... -> auto-conclude
       -> extract profile -> apply facts -> PDF + Word -> send to printer
 ```
 
-The server tracks which of nine resume topics have been answered (`TOPICS` in
-`routes_auto.py`) and tells the model what is still missing each turn. That is what stops
-the interview looping on a question, and it guarantees the interview ends by itself —
-either when every topic is covered or after `MAX_TURNS` (22) as a hard stop.
+The server decides what is asked and when the interview moves on (`SECTIONS` in
+`routes_auto.py`), telling the model exactly one thing to ask each turn. That is what stops
+the interview looping on a question, and it guarantees the interview ends by itself — after
+the fixed sections plus at most `MAX_GAP_QUESTIONS` clarifications, with `MAX_TURNS` (22) as
+a hard stop. If a turn fails or times out, the question falls back to a fixed wording per
+section per language rather than losing an interview that is already half-collected.
 
 Conversation state lives on the **server** and is written to disk every turn, so a refresh
 or crash never loses an interview. Errors surface as popups, and printer failures are
@@ -340,7 +387,11 @@ generation, PDF/DOCX rendering, refusal of official-document generation, and the
 - `routes_assistant.py` — `/assistant/api/*`: unified document matching/generation workflow
 - `document_render.py` — controlled application JSON → PDF and editable Word
 - `ws_stt.py` — shared live-transcription WebSocket handler
-- `profile_schema.py` — resume JSON schema + extraction prompt
+- `profile_schema.py` — resume JSON schema, extraction prompt, and `romanize_profile()`
+- `assistant_script.py` — every scripted line the kiosk speaks, in all three languages
+- `mailer.py` — best-effort emailing of the finished resume
+- `scripts/tepma.sh` — setup / start / stop / unload / status / tunnel
+- `scripts/prepare_models.py` — downloads the models and warms the speech cache
 - `resume_pdf.py` — profile JSON → resume PDF
 - `make_sample_docs.py` — generates test documents
 - `static/` — frontend pages including `assistant.html`; `voice.js` is the shared mic/TTS engine
