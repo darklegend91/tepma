@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import re
+import secrets
 import subprocess
 import time
 import uuid
@@ -17,7 +18,8 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response
 
 import storage
-from assistant_script import SCRIPT
+from assistant_script import SCRIPT, is_scripted
+from security import MAX_SPEAK_CHARS
 from document_render import render_application_docx, render_application_pdf
 from engines import llm_extract, synthesize_wav
 from facts import date_context
@@ -100,7 +102,8 @@ DOCUMENT_SCHEMA = {
 
 
 def _new_session(language: str, query: str) -> dict:
-    session_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:5]}"
+    # 64 random bits: the id is all that protects /assistant/api/generated/<id>.pdf.
+    session_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(8)}"
     directory = GENERATED_DIR / session_id
     directory.mkdir(parents=True, exist_ok=True)
     session = {
@@ -130,12 +133,15 @@ def _save(session: dict):
     (session["dir"] / "workflow.json").write_text(
         json.dumps(state, ensure_ascii=False, indent=2)
     )
-    storage.save_document(session["session_id"], **state)
+    # session_id is both the record's key and a field of the state; passing it twice raised
+    # TypeError on the first save of every document session.
+    fields = {key: value for key, value in state.items() if key != "session_id"}
+    storage.save_document(session["session_id"], **fields)
 
 
 def _session(session_id: str) -> dict:
     session = _sessions.get(session_id)
-    if session is None and re.fullmatch(r"\d{8}-\d{6}-[a-f0-9]{5}", session_id):
+    if session is None and re.fullmatch(r"\d{8}-\d{6}-[a-f0-9]{16}", session_id):
         directory = GENERATED_DIR / session_id
         workflow = directory / "workflow.json"
         if workflow.is_file():
@@ -456,7 +462,7 @@ async def generated_document(filename: str):
     if (
         not separator
         or extension not in {"pdf", "docx"}
-        or re.fullmatch(r"\d{8}-\d{6}-[a-f0-9]{5}", session_id) is None
+        or re.fullmatch(r"\d{8}-\d{6}-[a-f0-9]{16}", session_id) is None
     ):
         raise HTTPException(404, "Unknown document format")
     path = GENERATED_DIR / session_id / f"document.{extension}"
@@ -536,11 +542,14 @@ async def assistant_speak(payload: dict):
         raise HTTPException(400, "No text provided")
     # Kokoro is blocking and CPU-bound, and loading it the first time takes tens of
     # seconds - on the event loop that freezes every other request in the kiosk.
+    if len(text) > MAX_SPEAK_CHARS:
+        raise HTTPException(413, "Line too long to speak")
     language = str(payload.get("language", "en"))
     if language not in LANGUAGES:
         language = "en"
     try:
-        audio = await asyncio.to_thread(synthesize_wav, text, language)
+        audio = await asyncio.to_thread(synthesize_wav, text, language,
+                                        is_scripted(text, language))
     except Exception as exc:
         raise HTTPException(500, f"Could not speak that line: {exc}") from exc
     return Response(content=audio, media_type="audio/wav")

@@ -64,6 +64,10 @@ class AssistantWorkflowTests(unittest.IsolatedAsyncioTestCase):
         }
         with (
             patch.object(routes_assistant, "llm_extract", AsyncMock(return_value=decision)),
+            # The library is mocked rather than read from data/documents/: that folder is
+            # runtime data, not in git, so a fresh clone has no leave_application.pdf and
+            # the router correctly refuses a filename that is not in the library.
+            patch.object(routes_assistant, "list_docs", return_value=["leave_application.pdf"]),
             patch.object(routes_assistant, "default_printer_status", return_value={
                 "connected": False, "name": None, "state": "not_connected",
             }),
@@ -136,10 +140,24 @@ class AssistantWorkflowTests(unittest.IsolatedAsyncioTestCase):
 
 class PageTests(unittest.TestCase):
     def test_new_assistant_page_is_served(self):
-        response = TestClient(app).get("/assistant")
+        # A real host: the server refuses TestClient's default "testserver" by design,
+        # since an unrecognised Host header is how a DNS-rebinding attack arrives.
+        client = TestClient(app, base_url="http://127.0.0.1")
+        response = client.get("/assistant")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("I want a document", response.text)
-        self.assertIn("I want a résumé", response.text)
+        # The kiosk is voice-only: one tap to begin, Stop as the only control.
+        self.assertIn("Tap anywhere to begin", response.text)
+        self.assertIn('id="stopBtn"', response.text)
+        self.assertNotIn("<textarea", response.text)
+
+    def test_unknown_host_is_refused(self):
+        response = TestClient(app, base_url="http://evil.example").get("/assistant")
+        self.assertEqual(response.status_code, 400)
+
+    def test_legacy_resume_leak_is_not_mounted(self):
+        client = TestClient(app, base_url="http://127.0.0.1")
+        self.assertEqual(client.get("/interview/resume/latest").status_code, 404)
+        self.assertEqual(client.post("/interview/email", json={"to": "x@example.com"}).status_code, 404)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import re
+import secrets
 import subprocess
 import time
 import uuid
@@ -24,7 +25,8 @@ from engines import (TURN_MODEL, extract_partial_string, llm_extract, llm_stream
                      split_sentences, synthesize_wav)
 import mailer
 import storage
-from assistant_script import section_question
+from security import MAX_SPEAK_CHARS, websocket_origin_allowed
+from assistant_script import is_scripted, section_question
 from facts import apply_facts, date_context
 from printer_status import default_printer_status
 from profile_schema import (EXTRACTOR_PROMPT, PROFILE_SCHEMA, english_transcript,
@@ -205,7 +207,10 @@ async def auto_start(payload: dict):
     language = payload.get("language", "en")
     if language not in LANGUAGES:
         language = "en"
-    session_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
+    # The id is the only thing between /auto/resume/<id>.pdf and a stranger's phone number
+    # and address, so the random part is 64 bits. It used to be 16 - one guess in 65,536
+    # per second of the timestamp, which is an afternoon's brute force.
+    session_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(8)}"
     session_dir = DATA_DIR / session_id
     session_dir.mkdir(parents=True, exist_ok=True)
     messages = [{"role": "user", "content":
@@ -438,6 +443,26 @@ async def auto_gap_check(payload: dict):
             "collected": len(SECTIONS), "total": len(SECTIONS), "gaps": len(s["gaps"])}
 
 
+def _keep_spoken_pin(s: dict, profile: dict) -> dict:
+    """Put back a PIN code the candidate said but the extractor left out.
+
+    The gap pass asks for the PIN at the very end, so it is the last thing in the
+    transcript - and the extractor drops it often enough to matter: a Hindi candidate
+    answered "पिन कोड 140401" and the resume came out as just "Rajpura". The translation
+    kept the PIN on every run; extraction lost it. Deterministic, and it only ever adds
+    digits the candidate actually spoke - facts.py then validates the PIN and fills in the
+    district and state.
+    """
+    said = re.findall(r"\b(\d{6})\b", _said_by_candidate(s))
+    location = (profile.get("location") or "").strip()
+    if said and not re.search(r"\b\d{6}\b", location):
+        pin = said[-1]      # the latest mention: a correction supersedes the first answer
+        profile["location"] = f"{location}, {pin}" if location else pin
+        profile.setdefault("_corrections", []).append(
+            {"field": "location", "from": location, "to": profile["location"]})
+    return profile
+
+
 async def _build_profile(s: dict) -> dict:
     real = [m for m in s["messages"] if not m["content"].startswith("(")]
     if len(real) < 2:
@@ -463,6 +488,7 @@ async def _build_profile(s: dict) -> dict:
     # Before the facts layer, never after: the institution matcher and PIN lookup
     # are Latin-only and silently miss anything still written in Devanagari.
     profile = await romanize_profile(profile)
+    profile = _keep_spoken_pin(s, profile)
     profile = await asyncio.to_thread(apply_facts, profile)
     session_dir = s["dir"]
     (session_dir / "profile.json").write_text(json.dumps(profile, indent=2, ensure_ascii=False))
@@ -623,10 +649,13 @@ async def auto_speak(payload: dict):
     text = (payload.get("text") or "").strip()
     if not text:
         raise HTTPException(400, "No text provided")
+    if len(text) > MAX_SPEAK_CHARS:
+        raise HTTPException(413, "Line too long to speak")
     language = payload.get("language", "en")
     if language not in LANGUAGES:
         language = "en"
-    audio = await asyncio.to_thread(synthesize_wav, text, language)   # blocking, CPU-bound
+    audio = await asyncio.to_thread(synthesize_wav, text, language,      # blocking, CPU-bound
+                                    is_scripted(text, language))
     return Response(content=audio, media_type="audio/wav")
 
 
@@ -646,6 +675,9 @@ async def turn_stream_socket(ws: WebSocket):
         -> {"type": "done", ...}               same payload as POST /auto/turn
         -> {"type": "error", "detail": ...}    client should fall back to POST
     """
+    if not websocket_origin_allowed(ws.headers):
+        await ws.close(code=1008)       # opened by another website - see security.py
+        return
     await ws.accept()
     try:
         request = await ws.receive_json()

@@ -15,6 +15,9 @@ Everything runs on your own machine — no cloud APIs:
 | Backend | FastAPI (Python 3.11) |
 | PDF generation | fpdf2 |
 
+> **New here?** [USER_GUIDE.md](USER_GUIDE.md) walks through installing, running and using the
+> kiosk without assuming you have read any of the code.
+
 ## First-time setup
 
 Install Ollama, then run one command:
@@ -94,11 +97,37 @@ ollama stop qwen3:8b && ollama stop qwen3:4b-instruct
 
 Pages:
 
-- `/assistant` — **new unified workflow**: choose document or résumé
-- `/auto` — **automated kiosk interview**: one click, hands-free, auto-prints at the end
-- `/` — the manual resume interview (talk, then click **Generate resume**)
-- `/docs-assistant` — ask for a stored document by voice
-- `/test` — isolated STT / TTS testing tools
+- `/` and `/assistant` — **the kiosk**: the hands-free resume interview. This is the only
+  page served by default.
+
+The older developer pages — `/manual`, `/auto`, `/docs-assistant`, `/test` and their
+`/interview/*`, `/test/*` and `/documents/*` APIs — are not mounted unless you set
+`ENABLE_LEGACY_PAGES=1`. They were built for someone at a desk, and two of them are unsafe on
+a kiosk: `/interview/resume/latest` returns the most recent candidate's resume to anyone who
+asks, and `/interview/email` sends it to any address. The document branch of the assistant
+is likewise off until `ENABLE_DOCUMENTS=1`.
+
+## Security
+
+The server is built to run on the kiosk machine itself, and every protection below assumes
+that. Verified by probing a running server before and after each fix:
+
+| Protection | What it stops |
+|---|---|
+| Binds to `127.0.0.1` | Other machines on the network reaching it |
+| Host-header allowlist (`security.py`) | DNS rebinding — a web page pointing its own domain at 127.0.0.1 to read responses |
+| WebSocket `Origin` check | A page from another website opening the microphone socket or reading an interview |
+| Legacy pages unmounted | The "latest resume" and "email to any address" leaks |
+| 64-bit random session ids | Guessing `/auto/resume/<id>.pdf` for someone else's resume (was 16 bits) |
+| `/speak` length cap and scripted-only cache | One request occupying the synthesizer for minutes, or filling the disk |
+| No `/docs` or `/openapi.json` | Publishing a map of every endpoint |
+
+**What is not protected, and matters before exposing it beyond this machine:** there is no
+login and no rate limiting, so anything that can reach the server can run interviews and
+print. Resumes are kept unencrypted in `data/sessions/` and MongoDB (which runs without
+authentication, bound to localhost) with no automatic deletion. Dependencies are not pinned.
+Keep it on localhost unless you add authentication first. `tepma.sh tunnel` is for a
+supervised demo only.
 
 ### The unified flow (`/assistant`)
 
@@ -195,7 +224,7 @@ Then start everything and publish it in one step:
 It prints the address to open, for example:
 
 ```
-PUBLIC URL:  https://random-words-here.trycloudflare.com/auto
+PUBLIC URL:  https://random-words-here.trycloudflare.com/assistant
 ```
 
 The URL is temporary and anonymous: it lasts only while `cloudflared` runs, and stopping
@@ -420,6 +449,8 @@ generation, PDF/DOCX rendering, refusal of official-document generation, and the
 - `assistant_script.py` — every scripted line the kiosk speaks, in all three languages
 - `mailer.py` — best-effort emailing of the finished resume
 - `storage.py` — MongoDB records, with a circuit breaker so an outage cannot stall the kiosk
+- `security.py` — allowed hosts, WebSocket origin rule, and input limits
+- `USER_GUIDE.md` — setup and everyday use, for someone who has not read the code
 - `scripts/tepma.sh` — setup / start / stop / unload / status / tunnel
 - `scripts/prepare_models.py` — downloads the models and warms the speech cache
 - `resume_pdf.py` — profile JSON → resume PDF

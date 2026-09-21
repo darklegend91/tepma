@@ -5,11 +5,15 @@ import numpy as np
 from fastapi import WebSocket, WebSocketDisconnect
 
 from engines import transcribe_audio
+from security import websocket_origin_allowed
 
 
 async def live_transcribe_socket(ws: WebSocket):
     """Client streams PCM binary frames; server pushes {"partial": text} while audio
     accumulates and {"final": text} after a "stop" text frame."""
+    if not websocket_origin_allowed(ws.headers):
+        await ws.close(code=1008)       # policy violation: opened by another website
+        return
     await ws.accept()
     language = ws.query_params.get("language", "en")
     if language not in {"en", "hi", "pa"}:

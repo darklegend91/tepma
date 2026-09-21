@@ -164,20 +164,21 @@ def transcribe_audio(audio, fast: bool = False, language: str = "en") -> str:
     return " ".join(seg.text.strip() for seg in segments).strip()
 
 
-def synthesize_wav(text: str, language: str = "en") -> bytes:
+def synthesize_wav(text: str, language: str = "en", cache: bool = False) -> bytes:
     """Synthesize text to WAV bytes, in the language it is written in.
 
-    Cached on disk by (language, voice, text). The kiosk speaks the same scripted lines to
-    every person who walks up to it - the greeting alone is three languages long - and
-    Kokoro takes seconds per line. Generated speech (interview questions) is different
-    every time and simply never hits the cache.
+    cache=True reads and writes a disk cache keyed by (language, voice, text). Only the
+    scripted lines should use it: the kiosk speaks them to every visitor, so caching them
+    turns seconds into milliseconds. Generated questions are different every session and
+    caching them only fills the disk - and when the cache accepted any text, three
+    requests with made-up sentences added 2 MB that would never be read again.
     """
     key = hashlib.sha256(
         "\u0000".join((language, TTS_LANGUAGES.get(language, TTS_LANGUAGES["en"])[1],
                         str(TTS_RATE), text)).encode()
     ).hexdigest()[:32]
     cached = TTS_CACHE_DIR / f"{key}.wav"
-    if cached.is_file():
+    if cache and cached.is_file():
         return cached.read_bytes()
 
     _, voice = TTS_LANGUAGES.get(language, TTS_LANGUAGES["en"])
@@ -187,11 +188,12 @@ def synthesize_wav(text: str, language: str = "en") -> bytes:
     buf = io.BytesIO()
     sf.write(buf, np.concatenate(chunks), TTS_RATE, format="WAV")  # type: ignore[arg-type]
     audio = buf.getvalue()
-    try:
-        TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        cached.write_bytes(audio)
-    except OSError:
-        pass                            # a read-only disk costs speed, not function
+    if cache:
+        try:
+            TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            cached.write_bytes(audio)
+        except OSError:
+            pass                        # a read-only disk costs speed, not function
     return audio
 
 

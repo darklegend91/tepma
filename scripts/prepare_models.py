@@ -57,7 +57,7 @@ def main() -> int:
     failures = 0
     for text, language in spoken_lines():
         try:
-            synthesize_wav(text, language)
+            synthesize_wav(text, language, cache=True)
         except Exception:
             failures += 1
     done(t)

@@ -161,13 +161,21 @@ $model "*) echo "  model         $model pulled" ;;
 tunnel() {
     command -v cloudflared >/dev/null 2>&1 || {
         echo "cloudflared is not installed:  brew install cloudflared" >&2; exit 1; }
+    # The server refuses requests addressed to any hostname it does not know (see
+    # security.py), so the tunnel's hostname has to be allowed before the server starts.
+    export ALLOWED_HOSTS="${ALLOWED_HOSTS:+$ALLOWED_HOSTS,}*.trycloudflare.com"
+    if server_up; then
+        echo "  ! the server is already running without the tunnel hostname allowed." >&2
+        echo "    Run: scripts/tepma.sh stop, then scripts/tepma.sh tunnel" >&2
+        exit 1
+    fi
     start
     echo
     echo "  starting public tunnel - anyone with the URL can run an interview and print"
     nohup cloudflared tunnel --url "http://$HOST:$PORT" > "$LOG_DIR/tunnel.log" 2>&1 &
     for _ in $(seq 1 40); do
         url=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$LOG_DIR/tunnel.log" 2>/dev/null | head -1 || true)
-        [ -n "${url:-}" ] && { echo; echo "  PUBLIC URL:  $url/auto"; echo; return 0; }
+        [ -n "${url:-}" ] && { echo; echo "  PUBLIC URL:  $url/assistant"; echo; return 0; }
         sleep 1
     done
     echo "  ! no URL yet - check $LOG_DIR/tunnel.log" >&2

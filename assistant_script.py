@@ -196,3 +196,14 @@ SECTION_QUESTIONS: dict[str, dict[str, str]] = {
 def section_question(section: str, language: str) -> str:
     phrases = SECTION_QUESTIONS.get(section) or SECTION_QUESTIONS["gaps"]
     return phrases.get(language) or phrases["en"]
+
+
+_SCRIPTED: set[tuple[str, str]] | None = None
+
+
+def is_scripted(text: str, language: str) -> bool:
+    """Is this exact line one of the kiosk's own? Only those are worth caching."""
+    global _SCRIPTED
+    if _SCRIPTED is None:
+        _SCRIPTED = set(spoken_lines())
+    return (text, language) in _SCRIPTED
