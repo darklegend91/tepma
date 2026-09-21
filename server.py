@@ -3,7 +3,8 @@
 Routes served by default - the resume kiosk and nothing else:
   /             redirects to /assistant
   /assistant    the hands-free resume interview
-  /assistant/api/*, /auto/*   its APIs
+  WS /interview  one socket that runs an entire interview
+  /assistant/api/*, /auto/*   the older step-by-step APIs, still available
   /system/*     printer and database status
 
 ENABLE_LEGACY_PAGES=1 also mounts the older pages and their APIs (/manual, /auto page,
@@ -21,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 import routes_auto
+import routes_session
 import routes_assistant
 import routes_documents
 import routes_interview
@@ -37,6 +39,7 @@ app = FastAPI(title="TePMA Voice Server", docs_url=None, redoc_url=None, openapi
 # where a web page points its own domain at 127.0.0.1 to read this server's responses.
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
 
+app.include_router(routes_session.router)      # WS /interview - the whole interview
 app.include_router(routes_auto.router)
 app.include_router(routes_assistant.router)
 if LEGACY_PAGES or routes_assistant.ENABLE_DOCUMENTS:

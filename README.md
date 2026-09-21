@@ -107,6 +107,35 @@ a kiosk: `/interview/resume/latest` returns the most recent candidate's resume t
 asks, and `/interview/email` sends it to any address. The document branch of the assistant
 is likewise off until `ENABLE_DOCUMENTS=1`.
 
+## Running the language model elsewhere
+
+By default every model runs on this machine. Point `OPENAI_BASE_URL` at any
+OpenAI-compatible server (vLLM, llama.cpp, LM Studio) and the language model work moves
+there, while speech recognition and the voice stay local:
+
+```
+OPENAI_BASE_URL = "http://172.16.20.39:8000/v1"
+OPENAI_MODEL    = "Qwen/Qwen3-32B-AWQ"
+```
+
+`scripts/tepma.sh` then skips Ollama entirely - nothing to pull, and ~6 GB of memory back.
+Measured against a vLLM box serving Qwen3-32B-AWQ, compared with qwen3:8b and
+qwen3:4b-instruct on an M4:
+
+| | local | remote 32B |
+|---|---|---|
+| Interview question (Hindi) | 6.5s | 1.1s |
+| First word of a streamed question | seconds | 0.07s |
+| Extract the profile | 27s (English) / 89s (Hindi) | 11s |
+
+The server must honour `response_format: {"type": "json_schema"}` - the kiosk asks for
+structured output on every call. vLLM's own `guided_json` is not used: the server accepted
+the field and ignored it, returning prose where JSON was required. Thinking is disabled per
+request via `chat_template_kwargs`, because Qwen3 is a hybrid reasoning model and its
+reasoning would otherwise be read out loud.
+
+Set `LLM_BACKEND=ollama` to force everything local again.
+
 ## Security
 
 The server is built to run on the kiosk machine itself, and every protection below assumes
@@ -449,6 +478,8 @@ generation, PDF/DOCX rendering, refusal of official-document generation, and the
 - `assistant_script.py` — every scripted line the kiosk speaks, in all three languages
 - `mailer.py` — best-effort emailing of the finished resume
 - `storage.py` — MongoDB records, with a circuit breaker so an outage cannot stall the kiosk
+- `llm.py` — the language model client: local Ollama or an OpenAI-compatible server
+- `routes_session.py` — `WS /interview`, one socket that runs a whole interview
 - `security.py` — allowed hosts, WebSocket origin rule, and input limits
 - `USER_GUIDE.md` — setup and everyday use, for someone who has not read the code
 - `scripts/tepma.sh` — setup / start / stop / unload / status / tunnel

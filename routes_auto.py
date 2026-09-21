@@ -201,6 +201,29 @@ def _save(s: dict):
     )
 
 
+def create_session(language: str) -> tuple[str, dict]:
+    """A new interview, registered and on disk. Shared by POST /auto/start and WS /interview.
+
+    The id is the only thing between /auto/resume/<id>.pdf and a stranger's phone number
+    and address, so the random part is 64 bits. It used to be 16 - one guess in 65,536 per
+    second of the timestamp, which is an afternoon's brute force.
+    """
+    session_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(8)}"
+    session_dir = DATA_DIR / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    s = {
+        "messages": [{"role": "user", "content":
+                      "(The candidate has joined the voice call. Greet them and begin the interview.)"}],
+        "turns": 0, "dir": session_dir, "language": language,
+        "index": 0, "followups": 0, "phase": "sections", "gaps": [], "gaps_asked": 0,
+    }
+    _sessions[session_id] = s
+    _save(s)
+    return session_id, s
+
+
+# Public names for the pieces WS /interview drives. The underscored originals stay so the
+# HTTP endpoints below read the same as they always did.
 @router.post("/start")
 async def auto_start(payload: dict):
     """Begin an interview: create a session and return the spoken greeting."""
@@ -210,16 +233,9 @@ async def auto_start(payload: dict):
     # The id is the only thing between /auto/resume/<id>.pdf and a stranger's phone number
     # and address, so the random part is 64 bits. It used to be 16 - one guess in 65,536
     # per second of the timestamp, which is an afternoon's brute force.
-    session_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(8)}"
-    session_dir = DATA_DIR / session_id
-    session_dir.mkdir(parents=True, exist_ok=True)
-    messages = [{"role": "user", "content":
-                 "(The candidate has joined the voice call. Greet them and begin the interview.)"}]
-    s = {"messages": messages, "turns": 0, "dir": session_dir, "language": language,
-         "index": 0, "followups": 0, "phase": "sections", "gaps": [], "gaps_asked": 0}
+    session_id, s = create_session(language)
     reply = await _ask_question(s)
-    messages.append({"role": "assistant", "content": reply})
-    _sessions[session_id] = s
+    s["messages"].append({"role": "assistant", "content": reply})
     _save(s)
     return {"session_id": session_id, "reply": reply, "done": False,
             "language": language, "section": SECTION_IDS[0],
@@ -730,3 +746,13 @@ async def turn_stream_socket(ws: WebSocket):
 
 router.add_api_websocket_route("/listen", live_transcribe_socket)
 router.add_api_websocket_route("/turn-stream", turn_stream_socket)
+
+
+# --- used by routes_session.py (WS /interview) ---------------------------------------
+ask_question = _ask_question
+begin_turn = _begin_turn
+finish_turn = _finish_turn
+build_profile = _build_profile
+build_documents = _build_documents
+deliver = _deliver
+save_session = _save

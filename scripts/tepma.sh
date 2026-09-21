@@ -55,7 +55,11 @@ wait_for() {  # wait_for <name> <predicate> <seconds>
 }
 
 start() {
-    if ollama_up; then
+    REMOTE_LLM="$(env_value OPENAI_BASE_URL)"
+    if [ -n "$REMOTE_LLM" ]; then
+        # The models run on that server, so there is no reason to load 6 GB of them here.
+        echo "  - language model: $REMOTE_LLM (not starting ollama)"
+    elif ollama_up; then
         echo "  - ollama already running"
     else
         echo "  - starting ollama"
@@ -133,6 +137,12 @@ unload() {
 status() {
     [ -x "$VENV/python" ] && echo "  python env    installed" \
                           || echo "  python env    MISSING - run: scripts/tepma.sh setup"
+    remote="$(env_value OPENAI_BASE_URL)"
+    if [ -n "$remote" ]; then
+        echo "  language model  $remote"
+        curl -sf --max-time 3 "$remote/models" >/dev/null 2>&1 \
+            && echo "  llm server      reachable" || echo "  llm server      NOT REACHABLE"
+    fi
     ollama_up && echo "  ollama        running" || echo "  ollama        stopped"
     if command -v mongod >/dev/null 2>&1; then
         mongo_up && echo "  mongodb       running on 127.0.0.1:$MONGO_PORT" \
@@ -142,7 +152,7 @@ status() {
     fi
     server_up && echo "  voice server  running on http://$HOST:$PORT/assistant" \
                || echo "  voice server  stopped"
-    if ollama_up; then
+    if ollama_up && [ -z "$remote" ]; then
         # Captured first, not piped into grep: `grep -q` exits on the first match, which
         # kills `ollama list` with SIGPIPE, and `set -o pipefail` then reports the whole
         # pipeline as failed - so every pulled model looked missing.
@@ -215,8 +225,12 @@ setup() {
         wait_for ollama ollama_up 60
     fi
 
-    local pulled; pulled="$(ollama list 2>/dev/null || true)"
-    for model in "$LLM_MODEL" "$TURN_MODEL"; do
+    if [ -n "$(env_value OPENAI_BASE_URL)" ]; then
+        echo "  - language model is remote; skipping the local model downloads"
+        SKIP_MODELS=1
+    fi
+    local pulled; pulled="$([ -z "${SKIP_MODELS:-}" ] && ollama list 2>/dev/null || true)"
+    for model in $([ -z "${SKIP_MODELS:-}" ] && echo "$LLM_MODEL" "$TURN_MODEL"); do
         case "$pulled" in
             "$model "*|*"
 $model "*) echo "  - $model already pulled" ;;

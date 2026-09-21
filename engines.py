@@ -1,14 +1,19 @@
-"""Shared model engines: Whisper STT, Kokoro TTS, and the Ollama LLM client."""
+"""Shared model engines: Whisper speech-to-text and Kokoro speech.
+
+The language model client lives in llm.py and is re-exported here, so the rest of the app
+keeps importing the whole model layer from one place.
+"""
 import hashlib
 import io
-import json
 import os
 from pathlib import Path
 import re
-import httpx
 import numpy as np
 import soundfile as sf
 from dotenv import load_dotenv
+
+from llm import (LLM_BACKEND, LLM_MODEL, OLLAMA_URL, TURN_MODEL,  # noqa: F401
+                 llm_chat, llm_extract, llm_stream)
 
 load_dotenv()
 
@@ -20,16 +25,6 @@ def _setting(name: str, default: str) -> str:
     return value
 
 
-OLLAMA_URL = _setting("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
-# Profile extraction: read once at the end of an interview, accuracy over latency.
-LLM_MODEL = _setting("LLM_MODEL", "qwen3:8b")
-# Live interview questions. Deliberately a different, non-thinking instruct model:
-# qwen3:8b is a hybrid reasoning model, and the "think": False needed to keep it fast
-# enough for a voice call makes it leak its coverage bookkeeping into the spoken reply
-# (4 of 9 replies unusable in testing). Leaving thinking on fixes that but costs ~35s a
-# turn. An instruct model has no thinking mode to suppress, so it is both correct here
-# and faster. Extraction is unaffected and stays on LLM_MODEL.
-TURN_MODEL = _setting("TURN_MODEL", "qwen3:4b-instruct")
 # "auto" uses MLX when it imports (Apple Silicon) and faster-whisper otherwise.
 # Force one with "mlx" or "faster-whisper".
 STT_BACKEND = _setting("STT_BACKEND", "auto").lower()
@@ -260,79 +255,3 @@ def extract_partial_string(raw: str, key: str) -> str:
         out.append(char)
         i += 1
     return "".join(out)
-
-
-async def llm_stream(messages: list[dict], system: str, schema: dict, model: str | None = None,
-                     max_tokens: int | None = None):
-    """Yield raw response deltas from Ollama as they are generated.
-
-    Same call as llm_extract, but streamed. The caller reassembles the JSON; use
-    extract_partial_string() to pull a field out before the document is complete.
-    """
-    body = {
-        "model": model or LLM_MODEL,
-        "messages": [{"role": "system", "content": system}] + messages,
-        "stream": True,
-        "think": False,
-        "format": schema,
-        **({"options": {"num_predict": max_tokens}} if max_tokens else {}),
-    }
-    async with httpx.AsyncClient(timeout=300) as client:
-        async with client.stream("POST", f"{OLLAMA_URL}/api/chat", json=body) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line.strip():
-                    continue
-                try:
-                    payload = json.loads(line)
-                except ValueError:
-                    continue
-                delta = (payload.get("message") or {}).get("content", "")
-                if delta:
-                    yield delta
-                if payload.get("done"):
-                    return
-
-
-async def llm_extract(messages: list[dict], system: str, schema: dict,
-                      model: str | None = None, max_tokens: int | None = None) -> dict:
-    """Run the LLM with Ollama structured outputs: the reply is forced to match schema.
-
-    max_tokens caps the generation. Worth setting for anything spoken aloud: a small model
-    writing an unfamiliar script can loop instead of stopping - a Punjabi interview turn
-    ran until the 300s client timeout and killed the session, where the same question takes
-    about eight seconds when it terminates normally.
-    """
-    async with httpx.AsyncClient(timeout=300) as client:
-        r = await client.post(
-            f"{OLLAMA_URL}/api/chat",
-            json={
-                "model": model or LLM_MODEL,
-                "messages": [{"role": "system", "content": system}] + messages,
-                "stream": False,
-                "think": False,
-                "format": schema,
-                **({"options": {"num_predict": max_tokens}} if max_tokens else {}),
-            },
-        )
-        r.raise_for_status()
-        return json.loads(r.json()["message"]["content"])
-
-
-async def llm_chat(messages: list[dict], system: str) -> str:
-    """Send a conversation to the local Ollama model and return the reply text."""
-    async with httpx.AsyncClient(timeout=120) as client:
-        r = await client.post(
-            f"{OLLAMA_URL}/api/chat",
-            json={
-                "model": LLM_MODEL,
-                "messages": [{"role": "system", "content": system}] + messages,
-                "stream": False,
-                "think": False,
-            },
-        )
-        r.raise_for_status()
-        reply = r.json()["message"]["content"].strip()
-    if "</think>" in reply:
-        reply = reply.split("</think>", 1)[1].strip()
-    return reply
