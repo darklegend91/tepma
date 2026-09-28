@@ -396,5 +396,26 @@ class PrinterTests(unittest.TestCase):
         self.assertTrue(result["printed"])
 
 
+class PlaceholderTests(unittest.TestCase):
+    """The resume is the candidate's; it is not where the model explains itself."""
+
+    def test_the_models_own_note_is_removed(self):
+        from facts import apply_facts
+
+        profile = apply_facts({
+            "experience": [{"title": "Intern", "company": "Startup (name not provided)"}],
+            "education": [{"degree": "B.E.", "institution": "Unknown"}],
+        })
+        self.assertEqual(profile["experience"][0]["company"], "Startup")
+        self.assertEqual(profile["education"][0]["institution"], "")
+
+    def test_a_real_bracket_is_left_alone(self):
+        from facts import apply_facts
+
+        profile = apply_facts({"education": [
+            {"degree": "B.Tech (Hons)", "institution": "Thapar Institute"}]})
+        self.assertEqual(profile["education"][0]["degree"], "B.Tech (Hons)")
+
+
 if __name__ == "__main__":
     unittest.main()

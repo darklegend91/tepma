@@ -80,6 +80,9 @@ degrees, or numbers. Leave a field as an empty string or empty list if it was no
 - "target_role" is a JOB TITLE, the work a person does - "Carpenter", "Electrician", \
 "Data Entry Operator". Never the trade or subject they named it by: a man who says he \
 wants carpentry work is applying to be a "Carpenter", not to be "Carpentry".
+- Never write a note about what you did not learn. "Startup (name not provided)", \
+"Unknown", "N/A" - leave the field empty instead. The resume is the candidate's, and it \
+is not the place for your remarks.
 - "degree" is the qualification EARNED, written the way it appears on a certificate - \
 "ITI - Carpenter Trade", "Diploma in Civil Engineering", "10th", "B.A.". Never an \
 enrolment ("ITI Admission") and never the act of studying ("Did a course").

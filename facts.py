@@ -897,6 +897,49 @@ def normalise_degree(raw: str) -> str:
     # Trailing dots are left alone: "B.A." is spelt with one.
     return " ".join(degree.split()).strip(" ,-")
 
+# ----------------------------------------------- the model apologising on the document
+
+# A resume is not the place to explain what the interview did not get. Asked for the
+# employer of a six-month internship the candidate never named, the extractor wrote
+# "Startup (name not provided)" - and an employer reading the page sees the kiosk
+# apologising in the middle of somebody's work history.
+_PLACEHOLDER = re.compile(
+    r"\s*[\(\[]\s*(?:name\s+)?(?:not\s+(?:provided|specified|mentioned|given|stated|"
+    r"disclosed|available)|unnamed|unknown|unspecified|n/?a|tbd|none)\s*[\)\]]",
+    re.IGNORECASE)
+# The same thing said without brackets, where the whole value is the apology.
+_ONLY_PLACEHOLDER = re.compile(
+    r"^(?:not\s+(?:provided|specified|mentioned|given|stated)|unnamed|unknown|"
+    r"unspecified|n/?a|none|tbd)\.?$", re.IGNORECASE)
+
+
+def _without_placeholders(value: str) -> str:
+    """Drop the model's notes about what it did not learn."""
+    cleaned = _PLACEHOLDER.sub("", value or "").strip(" ,-")
+    return "" if _ONLY_PLACEHOLDER.match(cleaned) else cleaned
+
+
+def _scrub_placeholders(profile: dict, corrections: list) -> None:
+    """Over every free-text field a resume actually prints."""
+    targets = [(profile, key) for key in
+               ("name", "target_role", "summary", "location", "email", "phone")]
+    for entry in profile.get("education") or []:
+        targets += [(entry, key) for key in ("degree", "institution", "location", "details")]
+    for entry in profile.get("experience") or []:
+        targets += [(entry, key) for key in ("title", "company")]
+    for entry in profile.get("projects") or []:
+        targets += [(entry, key) for key in ("name", "title", "description")]
+    for holder, key in targets:
+        value = holder.get(key)
+        if not isinstance(value, str) or not value:
+            continue
+        cleaned = _without_placeholders(value)
+        if cleaned != value:
+            holder[key] = cleaned
+            corrections.append({"field": key, "from": value, "to": cleaned,
+                                "confidence": 1.0, "reason": "the model's own note"})
+
+
 # ------------------------------------------------------------------ entry point
 
 def apply_facts(profile: dict, transcript: str = "") -> dict:
@@ -911,6 +954,7 @@ def apply_facts(profile: dict, transcript: str = "") -> dict:
     """
     corrections = []
     validation_warnings = list(profile.get("_validation_warnings", []))
+    _scrub_placeholders(profile, corrections)
 
     role = profile.get("target_role", "")
     fixed_role = normalise_role(role)
