@@ -223,5 +223,54 @@ class SpokenDateTests(unittest.TestCase):
         self.assertEqual(result["education"][0]["year"], "2024-25")
 
 
+class PublicResumeTests(unittest.TestCase):
+    """What a walk-up candidate's resume must not say. Every case here came off a real
+    printed resume: a carpenter headed "Carpentry", a degree of "ITI Admission", and a
+    trade certificate corrected into an NIT."""
+
+    def test_a_trade_becomes_a_job_title(self):
+        from facts import normalise_role
+
+        self.assertEqual(normalise_role("Carpentry"), "Carpenter")
+        self.assertEqual(normalise_role("plumbing"), "Plumber")
+        self.assertEqual(normalise_role("electrical work"), "Electrician")
+
+    def test_a_real_job_title_is_left_alone(self):
+        from facts import normalise_role
+
+        self.assertEqual(normalise_role("Machine Learning Engineer"),
+                         "Machine Learning Engineer")
+
+    def test_an_enrolment_is_not_a_degree(self):
+        from facts import normalise_degree
+
+        self.assertEqual(normalise_degree("ITI Admission"), "ITI")
+        self.assertEqual(normalise_degree("B.A."), "B.A.")
+
+    def test_an_iti_is_never_corrected_into_an_nit(self):
+        from facts import correct_institution
+
+        self.assertEqual(correct_institution("ITI Hamirpur")[0], "ITI Hamirpur")
+
+    def test_a_shared_city_does_not_pick_the_wrong_institution(self):
+        from facts import correct_institution
+
+        self.assertEqual(correct_institution("Punjab Univercity")[0], "Panjab University")
+
+    def test_a_garbled_college_is_repaired_where_it_is_the_employer(self):
+        from facts import apply_facts
+
+        profile = {"experience": [{"title": "Intern", "company": "Chipkare University"}]}
+        result = apply_facts(profile)
+        self.assertEqual(result["experience"][0]["company"], "Chitkara University")
+
+    def test_an_ordinary_employer_is_not_dragged_towards_a_university(self):
+        from facts import apply_facts
+
+        profile = {"experience": [{"title": "Fitter", "company": "Sharma Motors"}]}
+        result = apply_facts(profile)
+        self.assertEqual(result["experience"][0]["company"], "Sharma Motors")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -23,7 +23,11 @@ REF_DIR = Path(__file__).parent / "data" / "reference"
 # A candidate name must be at least this similar to a canonical one to be corrected.
 # Lower = more corrections but more wrong ones. 0.62 catches "Thapadi"->"Thapar" while
 # leaving genuinely unknown colleges untouched.
-MATCH_THRESHOLD = 0.62
+# A type mismatch costs a match a fifth of its score (see correct_institution), so a
+# genuine correction across the university/institute line lands just under the old
+# 0.62: "Thapadi University" scores 0.77 against Thapar Institute of Engineering and
+# Technology, and 0.616 once penalised.
+MATCH_THRESHOLD = 0.60
 
 _institutions: list[str] | None = None
 _pin_ranges: dict[str, str] | None = None
@@ -82,6 +86,43 @@ def date_context() -> str:
 _GENERIC_WORDS = ("university", "universities", "vishwavidyalaya", "vidyapeeth",
                   "college", "institute", "technology", "engineering", "school")
 _SHORT_STOPWORDS = {"of", "the", "and", "for", "in", "at"}
+
+
+# Kinds of institution that are not each other, whatever the fuzzy score says. The
+# correction was quietly changing the kind: "ITI Hamirpur" became "National Institute of
+# Technology Hamirpur", turning a man with a trade certificate into an NIT graduate on a
+# document he hands to an employer. It matched on the city alone, because the words that
+# told the two apart had been stripped as generic before the comparison.
+#
+# Only the hard boundaries are listed. University, college, institute and vidyapeeth are
+# deliberately absent: Indian usage moves freely between them, and Thapar Institute of
+# Engineering and Technology is universally called Thapar University by the people who
+# went there.
+_EXCLUSIVE_TYPES = ("iti", "polytechnic", "school")
+
+
+def _institution_type(name: str) -> str | None:
+    """A kind of institution that cannot be corrected into any other kind."""
+    for token in re.findall(r"[a-z]+", name.lower()):
+        for marker in _EXCLUSIVE_TYPES:
+            if token == marker:
+                return marker
+            # "polytecnic", "politechnic" - long enough to misspell, so matched fuzzily.
+            if len(token) >= 6 and SequenceMatcher(None, token, marker).ratio() >= 0.85:
+                return marker
+    return None
+
+
+def _generic_word(name: str) -> str | None:
+    """The "university"/"college"/"institute" in a name, however it was spelt."""
+    for token in re.findall(r"[a-z]+", name.lower()):
+        if len(token) < 6:
+            continue
+        for word in _GENERIC_WORDS:
+            if SequenceMatcher(None, token, word).ratio() >= 0.80:
+                return "university" if word in ("universities", "vishwavidyalaya",
+                                                "vidyapeeth") else word
+    return None
 
 
 def _strip_generic(token: str) -> bool:
@@ -243,8 +284,15 @@ def correct_institution(name: str) -> tuple[str, float]:
     if not target:
         return name, 0.0
     target_tokens = set(target.split())
-    best, best_score = name, 0.0
+    spoken_type = _institution_type(name)
+    raw = name.lower()
+    spoken_generic = _generic_word(name)
+    # (score, closeness) - see the tie-break below.
+    best, best_score, best_raw = name, 0.0, 0.0
     for canonical in institutions():
+        # Never correct across a hard type boundary: an ITI is not an NIT.
+        if _institution_type(canonical) != spoken_type:
+            continue
         canonical_norm = _norm(canonical)
         score = SequenceMatcher(None, target, canonical_norm).ratio()
         # Shared tokens are strong evidence, but only in proportion to how much of the
@@ -256,8 +304,22 @@ def correct_institution(name: str) -> tuple[str, float]:
         if overlap:
             coverage = len(overlap) / max(len(target_tokens), len(canonical_tokens))
             score = max(score, coverage)
-        if score > best_score:
-            best, best_score = canonical, score
+        # Stripping the generic words is what lets "Thapar Institute" reach its official
+        # name, but it also makes "Guru Nanak Dev University" and "Guru Nanak Dev
+        # Engineering College" identical, and "Punjab Univercity" score a perfect 1.0
+        # against "Punjab Engineering College". When two canonical names score the same,
+        # the one that actually looks like what the candidate said wins.
+        closeness = SequenceMatcher(None, raw, canonical.lower()).ratio()
+        # Stripping "university" and "college" is what lets "Thapar Institute" reach its
+        # official name, but it also throws away the only thing telling Panjab University
+        # from Punjab Engineering College - so "Punjab Univercity" matched the college at
+        # a perfect 1.0. Put that word back as a penalty rather than a filter: naming a
+        # different kind counts against a match without forbidding it, because people do
+        # call Thapar Institute a university and are not wrong about which place they mean.
+        if spoken_generic and (other := _generic_word(canonical)) and other != spoken_generic:
+            score *= 0.8
+        if (score, closeness) > (best_score, best_raw):
+            best, best_score, best_raw = canonical, score, closeness
     return (best, best_score) if best_score >= MATCH_THRESHOLD else (name, best_score)
 
 
@@ -337,6 +399,16 @@ def _place_score(text: str, candidate: str) -> float:
     overlap = text_tokens & candidate_tokens
     coverage = len(overlap) / len(candidate_tokens) if candidate_tokens else 0.0
     return max(coverage, SequenceMatcher(None, text, candidate).ratio())
+
+
+# India Post writes a district as "Hamirpur(Hp)" - the name with the state bolted on. Left
+# as it was, the comparison against what the candidate said never matched and the resume
+# read "Hamirpur, 177001, Himachal Pradesh, Hamirpur(Hp)".
+_POSTAL_SUFFIX = re.compile(r"\s*\([^)]*\)\s*$")
+
+
+def _strip_postal_suffix(value: str) -> str:
+    return _POSTAL_SUFFIX.sub("", value or "").strip()
 
 
 def _display_place(value: str) -> str:
@@ -764,6 +836,57 @@ def _grounded_date(value: str, said: set[int]) -> bool:
     return all(number in said or (number < 100 and number in short)
                for number in numbers)
 
+
+# ------------------------------------------------- what a person is, not what they study
+
+# A resume's headline is the job the person is applying for, and a trade is not a job
+# title: a carpenter asked what work he wants says "carpentry", and the resume came back
+# headed "Carpentry", which reads as a subject on a timetable rather than as a man looking
+# for work. These are the trades this kiosk is for.
+_TRADE_ROLES = {
+    "carpentry": "Carpenter", "plumbing": "Plumber", "welding": "Welder",
+    "masonry": "Mason", "painting": "Painter", "tailoring": "Tailor",
+    "stitching": "Tailor", "driving": "Driver", "cooking": "Cook",
+    "catering": "Cook", "baking": "Baker", "fitting": "Fitter",
+    "turning": "Turner", "moulding": "Moulder", "machining": "Machinist",
+    "wiring": "Electrician", "electrical": "Electrician",
+    "electrical work": "Electrician", "electrician work": "Electrician",
+    "plumber work": "Plumber", "mechanic work": "Mechanic",
+    "motor mechanic": "Motor Mechanic", "beautician": "Beautician",
+    "beauty culture": "Beautician", "hairdressing": "Hairdresser",
+    "nursing": "Nurse", "teaching": "Teacher", "accounting": "Accountant",
+    "accountancy": "Accountant", "security": "Security Guard",
+    "housekeeping": "Housekeeper", "farming": "Farmer", "agriculture": "Farmer",
+    "computer operating": "Computer Operator", "data entry": "Data Entry Operator",
+    "refrigeration": "Refrigeration Technician", "ac repair": "AC Technician",
+    "carpenter work": "Carpenter", "welding work": "Welder",
+}
+
+
+def normalise_role(raw: str) -> str:
+    """The job title behind however the candidate described the work."""
+    role = " ".join((raw or "").split())
+    if not role:
+        return role
+    key = role.lower().strip(" .,-")   # a lookup key, so punctuation goes
+    for filler in ("job of ", "work of ", "job", "ka kaam", "the "):
+        key = key.removeprefix(filler).strip()
+    return _TRADE_ROLES.get(key, role)
+
+
+# Words that describe getting into a course rather than finishing one. An interview that
+# produced "ITI Admission" as a degree is recording an enrolment, not a qualification.
+_NOT_A_DEGREE = re.compile(
+    r"\s*\b(admission|admissions|enrolment|enrollment|coaching|preparation)\b\s*",
+    re.IGNORECASE)
+
+
+def normalise_degree(raw: str) -> str:
+    """Strip the words that describe enrolling rather than qualifying."""
+    degree = _NOT_A_DEGREE.sub(" ", raw or "")
+    # Trailing dots are left alone: "B.A." is spelt with one.
+    return " ".join(degree.split()).strip(" ,-")
+
 # ------------------------------------------------------------------ entry point
 
 def apply_facts(profile: dict, transcript: str = "") -> dict:
@@ -779,7 +902,20 @@ def apply_facts(profile: dict, transcript: str = "") -> dict:
     corrections = []
     validation_warnings = list(profile.get("_validation_warnings", []))
 
+    role = profile.get("target_role", "")
+    fixed_role = normalise_role(role)
+    if fixed_role != role:
+        profile["target_role"] = fixed_role
+        corrections.append({"field": "target_role", "from": role, "to": fixed_role,
+                            "confidence": 1.0})
+
     for edu in profile.get("education", []):
+        degree = edu.get("degree", "")
+        fixed_degree = normalise_degree(degree)
+        if fixed_degree != degree:
+            edu["degree"] = fixed_degree
+            corrections.append({"field": "education.degree", "from": degree,
+                                "to": fixed_degree, "confidence": 1.0})
         original = edu.get("institution", "")
         fixed, score = correct_institution(original)
         if fixed != original:
@@ -801,6 +937,21 @@ def apply_facts(profile: dict, transcript: str = "") -> dict:
                 entry[field] = ""
                 corrections.append({"field": f"date.{field}", "from": value, "to": "",
                                     "confidence": 1.0, "reason": "never said"})
+
+    # An internship is very often at a college, and the garbled name lands in "company"
+    # where nothing was looking at it: one resume carried "Chipkare University" as the
+    # employer while the education section had been tidied up. Only names that call
+    # themselves an institution are matched, so ordinary employers are never dragged
+    # towards a university that happens to share a word with them.
+    for job in profile.get("experience", []):
+        company = (job.get("company") or "").strip()
+        if not company or not _generic_word(company):
+            continue
+        fixed, score = correct_institution(company)
+        if fixed != company:
+            job["company"] = fixed
+            corrections.append({"field": "experience.company", "from": company,
+                                "to": fixed, "confidence": round(score, 2)})
 
     phone = profile.get("phone", "")
     fixed_phone = normalise_phone(phone)
@@ -844,7 +995,7 @@ def apply_facts(profile: dict, transcript: str = "") -> dict:
 
         # Add a district only when a local office/district/division matched. A PIN
         # with no place text, or only a state match, is not enough to choose one.
-        district = pin.get("district")
+        district = _strip_postal_suffix(pin.get("district") or "") or None
         if (
             district
             and pin.get("match_field") in {"officename", "district", "divisionname"}

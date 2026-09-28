@@ -77,6 +77,12 @@ or Gurmukhi text into any field, not even for names, cities or institutions:
 Rules:
 - Use ONLY information the candidate actually stated. Never invent employers, dates, \
 degrees, or numbers. Leave a field as an empty string or empty list if it was not covered.
+- "target_role" is a JOB TITLE, the work a person does - "Carpenter", "Electrician", \
+"Data Entry Operator". Never the trade or subject they named it by: a man who says he \
+wants carpentry work is applying to be a "Carpenter", not to be "Carpentry".
+- "degree" is the qualification EARNED, written the way it appears on a certificate - \
+"ITI - Carpenter Trade", "Diploma in Civil Engineering", "10th", "B.A.". Never an \
+enrolment ("ITI Admission") and never the act of studying ("Did a course").
 - Write experience bullets in strong resume style: start with an action verb, include \
 numbers and impact the candidate mentioned.
 - Write a 2-3 sentence professional summary based on the whole conversation.
