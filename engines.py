@@ -159,28 +159,22 @@ def transcribe_audio(audio, fast: bool = False, language: str = "en") -> str:
     than CPU `small` at 4.9s. See STT_BACKEND in the README.
     """
     if STT_BACKEND == "mlx" or (STT_BACKEND == "auto" and _mlx_available()):
-        import mlx_whisper
-        # faster-whisper ships a VAD that silently drops non-speech; MLX has none, and
-        # Whisper invents text when handed silence ("ॐ ॐ ॐ", or one phrase repeated).
-        # Measured speech sits at RMS ~0.13 and room noise below 0.03, so this rejects
-        # digital silence and hiss without ever reaching a real, quietly-spoken answer.
-        if not isinstance(audio, str):
-            level = float(np.sqrt(np.mean(np.square(np.asarray(audio, dtype=np.float32)))))
-            if level < SILENCE_RMS:
-                return ""
-        result = mlx_whisper.transcribe(
-            audio,
-            path_or_hf_repo=MLX_WHISPER_MODEL,
-            language=language,
-            condition_on_previous_text=False,
-            # Suppress a segment when the model is both unsure and hears no speech.
-            # Whisper needs both thresholds to agree before it will discard a segment.
-            no_speech_threshold=0.6,
-            logprob_threshold=-0.5,
-            compression_ratio_threshold=2.4,
-        )
-        text = (result.get("text") or "").strip()
-        return "" if _is_hallucinated(text) else text
+        try:
+            return _transcribe_mlx(audio, language)
+        except RuntimeError as exc:
+            if not _is_metal_failure(exc):
+                raise
+            # The GPU has thrown a command-buffer error, and Metal does not forgive one:
+            # every later submission from this process comes back "Ignored (for causing
+            # prior/excessive GPU errors)". Whisper would be dead for the life of the
+            # server - the kiosk would keep listening politely and hear nothing, for
+            # every candidate, until somebody noticed and restarted it. Drop to the CPU
+            # backend instead: slower, and still an interview.
+            global _mlx_ok
+            _mlx_ok = False
+            print(f"whisper: the GPU failed ({exc}); using the CPU backend from now on.")
+            if STT_BACKEND == "mlx":
+                raise               # explicitly pinned to MLX: do not silently change it
 
     segments, _ = get_whisper().transcribe(
         audio,
@@ -189,6 +183,38 @@ def transcribe_audio(audio, fast: bool = False, language: str = "en") -> str:
         condition_on_previous_text=False,
     )
     return " ".join(seg.text.strip() for seg in segments).strip()
+
+
+def _is_metal_failure(exc: Exception) -> bool:
+    text = str(exc)
+    return "[METAL]" in text or "Command buffer execution failed" in text
+
+
+def _transcribe_mlx(audio, language: str) -> str:
+    """One transcription on the Apple-Silicon GPU. Raises RuntimeError when Metal fails."""
+    import mlx_whisper
+
+    # faster-whisper ships a VAD that silently drops non-speech; MLX has none, and
+    # Whisper invents text when handed silence ("ॐ ॐ ॐ", or one phrase repeated).
+    # Measured speech sits at RMS ~0.13 and room noise below 0.03, so this rejects
+    # digital silence and hiss without ever reaching a real, quietly-spoken answer.
+    if not isinstance(audio, str):
+        level = float(np.sqrt(np.mean(np.square(np.asarray(audio, dtype=np.float32)))))
+        if level < SILENCE_RMS:
+            return ""
+    result = mlx_whisper.transcribe(
+        audio,
+        path_or_hf_repo=MLX_WHISPER_MODEL,
+        language=language,
+        condition_on_previous_text=False,
+        # Suppress a segment when the model is both unsure and hears no speech.
+        # Whisper needs both thresholds to agree before it will discard a segment.
+        no_speech_threshold=0.6,
+        logprob_threshold=-0.5,
+        compression_ratio_threshold=2.4,
+    )
+    text = (result.get("text") or "").strip()
+    return "" if _is_hallucinated(text) else text
 
 
 def synthesize_wav(text: str, language: str = "en", cache: bool = False) -> bytes:

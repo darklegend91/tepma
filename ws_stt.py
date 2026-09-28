@@ -7,6 +7,17 @@ from fastapi import WebSocket, WebSocketDisconnect
 from engines import transcribe_audio
 from security import websocket_origin_allowed
 
+SAMPLE_RATE = 16000
+# A partial only exists to show the speaker that they are being heard, so it is run on the
+# tail of what they are saying rather than on all of it. Transcribing the whole buffer
+# every second meant large-v3 re-decoding a longer and longer utterance until the GPU
+# watchdog killed the command buffer - and Metal then refuses every later submission from
+# the process, which left the kiosk permanently deaf mid-interview.
+PARTIAL_WINDOW_S = 12
+# How much new audio a partial needs before it is worth running again. It grows with the
+# utterance so a long answer does not queue up GPU work faster than it can be finished.
+PARTIAL_MIN_NEW_S = 1.5
+
 
 async def live_transcribe_socket(ws: WebSocket):
     """Client streams PCM binary frames; server pushes {"partial": text} while audio
@@ -32,9 +43,11 @@ async def live_transcribe_socket(ws: WebSocket):
             return
         busy = True
         last_len = len(buffer)
+        # The final pass reads everything; a partial reads only the tail.
+        window = buffer if final else buffer[-PARTIAL_WINDOW_S * SAMPLE_RATE:]
         try:
             text = await asyncio.get_event_loop().run_in_executor(
-                None, transcribe_audio, buffer, not final, language
+                None, transcribe_audio, window, not final, language
             )
             await ws.send_json({"final" if final else "partial": text})
         finally:
@@ -46,7 +59,10 @@ async def live_transcribe_socket(ws: WebSocket):
             if msg.get("bytes") is not None:
                 pcm = np.frombuffer(msg["bytes"], dtype=np.int16).astype(np.float32) / 32768.0
                 buffer = np.concatenate([buffer, pcm])
-                if len(buffer) - last_len >= 16000 and not busy:
+                # Back off as the answer gets longer: at ten seconds in, a partial every
+                # second is work the GPU has no chance of keeping up with.
+                needed = max(PARTIAL_MIN_NEW_S * SAMPLE_RATE, len(buffer) * 0.25)
+                if len(buffer) - last_len >= needed and not busy:
                     asyncio.ensure_future(transcribe_and_send(final=False))
             elif msg.get("text") == "stop":
                 while busy:

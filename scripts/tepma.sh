@@ -87,7 +87,13 @@ start() {
         echo "  - voice server already running on $HOST:$PORT"
     else
         echo "  - starting voice server on $HOST:$PORT"
-        nohup "$VENV/uvicorn" server:app --host "$HOST" --port "$PORT" \
+        # Started in a session of its own, not merely nohup'd. nohup only ignores SIGHUP:
+        # the server stays in the process group of whichever shell launched it, and when
+        # that shell's group was torn down the kiosk was taken with it, mid-interview and
+        # with no error anywhere but a graceful "Shutting down" in the log. macOS has no
+        # setsid(1), so Python's os.setsid does the detaching.
+        "$VENV/python" -c 'import os, sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
+            "$VENV/uvicorn" server:app --host "$HOST" --port "$PORT" \
             > "$LOG_DIR/server.log" 2>&1 &
         wait_for "voice server" server_up 90
     fi

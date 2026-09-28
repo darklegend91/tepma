@@ -66,6 +66,11 @@ MAX_UTTERANCE_S = float(os.getenv("MAX_UTTERANCE_S", "60"))
 # How often to show what has been heard so far while the candidate is still talking.
 PARTIAL_EVERY_S = 1.0
 SAMPLE_RATE = 16000
+# A partial is only shown, never kept, so it reads the tail of the answer rather than all
+# of it. Running large-v3 over the whole buffer every second meant re-decoding a longer and
+# longer utterance until the GPU watchdog killed the command buffer - after which Metal
+# refuses every later submission from the process and the kiosk is deaf for good.
+PARTIAL_WINDOW_S = 12
 
 # How many times a question is re-asked before the interview moves on regardless.
 MAX_UNCLEAR = 3
@@ -295,6 +300,7 @@ class Session:
         """Greedy pass over what has been said so far - discarded, only ever displayed."""
         if len(buffer) < SAMPLE_RATE // 2:
             return
+        buffer = buffer[-PARTIAL_WINDOW_S * SAMPLE_RATE:]
         try:
             text = await asyncio.to_thread(transcribe_audio, buffer, True, self.language)
         except Exception:
