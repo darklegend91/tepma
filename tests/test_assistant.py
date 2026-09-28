@@ -150,6 +150,17 @@ class PageTests(unittest.TestCase):
         self.assertIn('id="stopBtn"', response.text)
         self.assertNotIn("<textarea", response.text)
 
+    def test_the_details_panel_is_shown_and_cannot_be_typed_into(self):
+        # The candidate watches their answers land, which is the only way they find out
+        # the kiosk misheard them before the resume is printed. It is a mirror, not a
+        # form: there is no keyboard anywhere in this kiosk.
+        client = TestClient(app, base_url="http://127.0.0.1")
+        page = client.get("/assistant").text
+        self.assertIn('id="formFields"', page)
+        self.assertIn("Your details", page)
+        self.assertNotIn("<input", page)
+        self.assertNotIn("contenteditable", page)
+
     def test_unknown_host_is_refused(self):
         response = TestClient(app, base_url="http://evil.example").get("/assistant")
         self.assertEqual(response.status_code, 400)

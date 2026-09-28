@@ -311,7 +311,7 @@ async def auto_start(payload: dict):
     s["messages"].append({"role": "assistant", "content": reply})
     _save(s)
     return {"session_id": session_id, "reply": reply, "done": False,
-            "language": language, "section": SECTION_IDS[0],
+            "language": language, "section": SECTION_IDS[0], "gap": None,
             "collected": 0, "total": len(SECTIONS)}
 
 
@@ -433,6 +433,9 @@ def _finish_turn(s: dict, result: dict) -> dict:
         "phase": s["phase"],
         "section": (SECTION_IDS[s["index"]] if s["phase"] == "sections"
                     and s["index"] < len(SECTIONS) else "gaps"),
+        # Which gap is being asked about, so the page can show the answer against the
+        # right field. "gaps" alone does not say whether this is the email or the PIN.
+        "gap": s["gaps"][0] if s["phase"] == "gaps" and s["gaps"] else None,
         "collected": collected,
         "total": len(SECTIONS),
         "needs_gap_check": s["phase"] == "sections" and s["index"] >= len(SECTIONS),

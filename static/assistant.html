@@ -54,6 +54,32 @@
                  background:color-mix(in srgb,#22c55e 11%,transparent); line-height:1.5; }
   .warning-box { padding:.85rem; border-radius:10px;
                  background:color-mix(in srgb,#f59e0b 12%,transparent); line-height:1.5; }
+
+  /* The interview and the form it is filling in, side by side. The candidate can watch
+     their own answers land, which is the only way they find out the kiosk misheard them
+     before the resume is printed. */
+  .interview { display:grid; gap:1rem; align-items:start;
+               grid-template-columns:minmax(0,1fr) 19rem; }
+  @media (max-width:820px) { .interview { grid-template-columns:minmax(0,1fr); } }
+  body:has(.interview) { max-width:1080px; }
+  #formCard { position:sticky; top:1rem; }
+  #formCard h2 { margin:0 0 .15rem; }
+  #formCard .hint { font-size:.78rem; opacity:.6; margin-bottom:.8rem; line-height:1.45; }
+  .field { padding:.5rem 0; border-bottom:1px solid color-mix(in srgb,CanvasText 10%,Canvas); }
+  .field:last-child { border-bottom:none; }
+  .field .label { font-size:.7rem; text-transform:uppercase; letter-spacing:.06em;
+                  opacity:.55; display:flex; justify-content:space-between; gap:.5rem; }
+  .field .value { margin-top:.2rem; font-size:.92rem; line-height:1.4;
+                  overflow-wrap:anywhere; }
+  .field .value.empty { opacity:.32; font-style:italic; }
+  .field.asking { background:color-mix(in srgb,#4f46e5 10%,transparent);
+                  border-radius:.5rem; padding-inline:.5rem; margin-inline:-.5rem; }
+  .field.asking .label::after { content:"asking now"; font-style:normal; opacity:.75; }
+  .field.filled .value { animation:landed .9s ease-out; }
+  @keyframes landed { from { background:color-mix(in srgb,#16a34a 26%,transparent); }
+                      to   { background:transparent; } }
+  @media (prefers-reduced-motion:reduce) { .field.filled .value { animation:none; } }
+  .field .fixed { font-size:.72rem; opacity:.6; margin-top:.15rem; }
 </style>
 </head>
 <body>
@@ -67,6 +93,7 @@
 
   <h1>TePMA Assistant</h1>
 
+  <div class="interview">
   <section class="card" id="workflowCard">
     <div class="workflow-head">
       <h2 id="workflowTitle">Assistant</h2>
@@ -91,6 +118,16 @@
     <button id="stopBtn" type="button" hidden>Stop</button>
   </section>
 
+  <!-- Read-only on purpose: there is no keyboard anywhere in this kiosk. It is a mirror
+       of what has been understood, not a form to correct. -->
+  <aside class="card" id="formCard">
+    <h2>Your details</h2>
+    <div class="hint">Filled in as you answer. If something here is wrong, say it again
+      — I will ask about anything I did not get.</div>
+    <div id="formFields"></div>
+  </aside>
+  </div>
+
   <section class="card" id="resultCard" hidden>
     <h2>Result</h2>
     <div id="resultSummary" class="success-box"></div>
@@ -107,7 +144,7 @@ const ui = Object.fromEntries([
   "begin","workflowCard","workflowTitle","stepChoose","stepCollect","stepCreate",
   "stepSave","stepPrint","progressTrack","progressFill","progressLabel","chatLog",
   "hearing","meterFill","statusText","stopBtn","resultCard","resultSummary",
-  "pdfLink","docxLink"
+  "pdfLink","docxLink","formFields"
 ].map(id => [id, el(id)]));
 
 // The scripted lines (greeting, prompts, closing) come from the server: it holds one copy,
@@ -307,6 +344,7 @@ async function runSession() {
   ui.stopBtn.hidden = false;
   ui.resultCard.hidden = true;
   ui.chatLog.innerHTML = "";
+  resetForm();
   ["Choose","Collect","Create","Save","Print"].forEach(name => setStep(name, ""));
   setStep("Choose", "active");
   setProgress(4, "Choosing a language");
@@ -384,13 +422,17 @@ async function runResume() {
   setProgress(12, "Starting the résumé interview");
 
   status("Starting the interview…");
+  resetForm();
   let turn = await api("/auto/start", {language: state.language});
   state.sessionId = turn.session_id;
+  markAsking(turn);
   await speakLine(turn.reply);
 
   while (state.running && !turn.done) {
+    const asked = turn;                  // the answer belongs to the question just asked
     const answer = await hearAnswer();
     if (!answer) return;                 // abandoned mid-interview; transcript is saved
+    recordAnswer(asked, answer);
 
     status("Preparing the next question…");
     let spokenAlready = false;
@@ -411,12 +453,14 @@ async function runResume() {
     checkRunning();
     if (!spokenAlready) await speakLine(turn.reply);
     showInterviewProgress(turn);
+    markAsking(turn);
 
     // Every section answered: find out what the draft profile is still missing, and ask.
     if (turn.needs_gap_check) {
       status("Checking what is still missing…");
       turn = await api("/auto/gap-check", {session_id: state.sessionId});
       checkRunning();
+      markAsking(turn);
       if (!turn.done) await speakLine(turn.reply);
     }
   }
@@ -427,6 +471,7 @@ async function runResume() {
   setProgress(68, "Building your profile");
   status("Building your profile…");
   const profile = await api("/auto/profile", {session_id: state.sessionId});
+  finaliseForm(profile);
   setStep("Create", "complete");
   setStep("Save", "active");
   setProgress(80, "Creating PDF and Word files");
@@ -442,6 +487,113 @@ async function runResume() {
     ? (delivery.printed ? "finishedEmailed" : "finishedEmailedNoPrint")
     : (delivery.printed ? "finishedPrintOnly" : "finishedSavedOnly");
   await speakScript(closing);
+}
+
+// ---------- the form that fills itself in ----------
+// One row per thing the interview collects, in the order it is asked. The keys are the
+// server's own section ids, and the gap pass reuses them, so a re-asked email lands back
+// on the email row instead of somewhere new.
+const FIELDS = [
+  ["identity",    "Name"],
+  ["phone",       "Mobile number"],
+  ["email",       "Email"],
+  ["target_role", "Applying for"],
+  ["education",   "Education"],
+  ["experience",  "Experience"],
+  ["projects",    "Projects"],
+  ["location",    "Town and PIN"],
+];
+// The gap pass has its own names for two of these.
+const GAP_FIELD = {name: "identity", email: "email", phone: "phone",
+                   target_role: "target_role", education: "education",
+                   experience: "experience", skills: "projects", location: "location"};
+
+// justFilled is the one row that changed on this redraw. Without it every filled row
+// flashes again each time any answer lands, which draws the eye to everything at once -
+// and the point of the flash is to say "that one, just now".
+const form = {values: {}, asking: null, justFilled: null};
+
+// What the kiosk understood, taken out of the sentence it was said in. Deliberately
+// shallow: a number, an address, a PIN. Anything else is shown as spoken, because
+// pretending to have parsed it would hide exactly the mistakes this panel exists to show.
+function readAnswer(field, said) {
+  const text = (said || "").trim();
+  if (field === "phone") {
+    const digits = (text.match(/\d/g) || []).join("");
+    return digits.length >= 10 ? digits.slice(-10).replace(/(\d{5})(\d{5})/, "$1 $2") : text;
+  }
+  if (field === "email") {
+    const spelt = text.toLowerCase()
+      .replace(/\s*(?:at the rate|at)\s*/g, "@").replace(/\s*dot\s*/g, ".")
+      .replace(/[\s-]/g, "");
+    const match = spelt.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/);
+    return match ? match[0] : text;
+  }
+  return text;
+}
+
+function drawForm() {
+  ui.formFields.innerHTML = FIELDS.map(([key, label]) => {
+    const value = form.values[key];
+    return `<div class="field ${form.asking === key ? "asking" : ""}
+                 ${form.justFilled === key ? "filled" : ""}">
+      <div class="label"><span>${label}</span></div>
+      <div class="value ${value ? "" : "empty"}">${value ? escapeHtml(value) : "not yet"}</div>
+    </div>`;
+  }).join("");
+}
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"]/g,
+    c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+}
+
+function resetForm() {
+  form.values = {};
+  form.asking = null;
+  form.justFilled = null;
+  drawForm();
+}
+
+/** Note the answer that was just given, against whatever was being asked for. */
+function recordAnswer(turn, said) {
+  const field = turn.phase === "gaps" ? GAP_FIELD[turn.gap] : turn.section;
+  if (!field || !said) return;
+  form.values[field] = readAnswer(field, said);
+  form.justFilled = field;
+  drawForm();
+}
+
+/** Point at whatever is being asked for now. */
+function markAsking(turn) {
+  form.asking = turn.done ? null
+    : (turn.phase === "gaps" ? GAP_FIELD[turn.gap] : turn.section) || null;
+  form.justFilled = null;
+  drawForm();
+}
+
+/** Replace what was heard with what was actually extracted, once the profile is built. */
+function finaliseForm(profile) {
+  const education = (profile.education || [])[0] || {};
+  const job = (profile.experience || [])[0] || {};
+  const project = (profile.projects || [])[0] || {};
+  const filled = {
+    identity: profile.name,
+    phone: profile.phone,
+    email: profile.email,
+    target_role: profile.target_role,
+    education: [education.degree, education.institution, education.location, education.year]
+      .filter(Boolean).join(" — "),
+    experience: [job.title, job.company].filter(Boolean).join(" — "),
+    projects: project.name || project.title || project.description || "",
+    location: profile.location,
+  };
+  for (const [key, value] of Object.entries(filled)) {
+    if (value) form.values[key] = value;
+  }
+  form.asking = null;
+  form.justFilled = null;
+  drawForm();
 }
 
 function showInterviewProgress(turn) {
