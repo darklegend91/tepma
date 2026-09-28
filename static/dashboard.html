@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TePMA — Interviews</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  body { max-width:1180px; }
+  [hidden] { display:none !important; }
+  .head { display:flex; justify-content:space-between; align-items:baseline;
+          gap:1rem; flex-wrap:wrap; margin-bottom:.4rem; }
+  .head h1 { margin:0; font-size:1.5rem; }
+  .sub { opacity:.65; font-size:.85rem; }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr));
+           gap:.6rem; margin:1rem 0 1.2rem; }
+  .tile { padding:.75rem .9rem; border-radius:.7rem;
+          background:color-mix(in srgb, CanvasText 5%, Canvas);
+          border:1px solid color-mix(in srgb, CanvasText 12%, Canvas); }
+  .tile .n { font-size:1.6rem; font-weight:600; line-height:1.15; }
+  .tile .k { font-size:.72rem; text-transform:uppercase; letter-spacing:.06em;
+             opacity:.6; margin-top:.15rem; }
+  .tile.warn .n { color:#b45309; }
+  :root:not([data-theme="light"]) .tile.warn .n { color:#fbbf24; }
+  @media (prefers-color-scheme: dark) { .tile.warn .n { color:#fbbf24; } }
+
+  .controls { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center;
+              margin-bottom:.8rem; }
+  .controls input, .controls select { padding:.45rem .6rem; border-radius:.5rem;
+      border:1px solid color-mix(in srgb, CanvasText 22%, Canvas);
+      background:Canvas; color:CanvasText; font:inherit; }
+  .controls input { flex:1 1 15rem; }
+  .controls button { padding:.45rem .7rem; border-radius:.5rem; font:inherit;
+      cursor:pointer; color:CanvasText;
+      border:1px solid color-mix(in srgb, CanvasText 22%, Canvas);
+      background:color-mix(in srgb, CanvasText 6%, Canvas); }
+  .controls button[disabled] { opacity:.5; cursor:progress; }
+
+  table { width:100%; border-collapse:collapse; font-size:.87rem; }
+  th, td { text-align:left; padding:.5rem .55rem; vertical-align:top;
+           border-bottom:1px solid color-mix(in srgb, CanvasText 10%, Canvas); }
+  th { font-size:.72rem; text-transform:uppercase; letter-spacing:.05em; opacity:.6;
+       font-weight:600; position:sticky; top:0; background:Canvas; }
+  tbody tr { cursor:pointer; }
+  tbody tr:hover { background:color-mix(in srgb, CanvasText 5%, Canvas); }
+  .mono { font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .muted { opacity:.45; }
+  .pill { display:inline-block; padding:.08rem .45rem; border-radius:.6rem;
+          font-size:.72rem; white-space:nowrap; }
+  .pill.lang { background:color-mix(in srgb, #4f46e5 18%, Canvas); }
+  .pill.bad  { background:color-mix(in srgb, #dc2626 22%, Canvas); }
+  .pill.fix  { background:color-mix(in srgb, #0ea5e9 18%, Canvas); }
+  .pill.ok   { background:color-mix(in srgb, #16a34a 18%, Canvas); }
+
+  dialog { width:min(760px, 92vw); border:none; border-radius:.9rem; padding:0;
+           background:Canvas; color:CanvasText;
+           box-shadow:0 12px 44px rgb(0 0 0 / .32); }
+  dialog::backdrop { background:rgb(0 0 0 / .45); }
+  .sheet { padding:1.2rem 1.35rem 1.4rem; }
+  .sheet h2 { margin:0 0 .15rem; font-size:1.2rem; }
+  .sheet h3 { margin:1.1rem 0 .35rem; font-size:.74rem; text-transform:uppercase;
+              letter-spacing:.06em; opacity:.6; }
+  .kv { display:grid; grid-template-columns:8.5rem 1fr; gap:.25rem .8rem;
+        font-size:.87rem; }
+  .kv dt { opacity:.6; }
+  .kv dd { margin:0; }
+  .turn { margin:.35rem 0; font-size:.85rem; line-height:1.45; }
+  .turn b { opacity:.55; font-weight:600; }
+  .close { float:right; border:none; background:transparent; color:inherit;
+           font-size:1.3rem; cursor:pointer; opacity:.5; line-height:1; }
+  .empty { padding:2.5rem 1rem; text-align:center; opacity:.6; }
+</style>
+</head>
+<body>
+
+<div class="head">
+  <div>
+    <h1>Interviews</h1>
+    <div class="sub" id="source">Loading…</div>
+  </div>
+  <div class="sub"><a href="/assistant">Open the kiosk →</a></div>
+</div>
+
+<div class="tiles">
+  <div class="tile"><div class="n" id="tTotal">–</div><div class="k">Profiles</div></div>
+  <div class="tile"><div class="n" id="tPrinted">–</div><div class="k">Printed</div></div>
+  <div class="tile warn"><div class="n" id="tProblems">–</div><div class="k">Need a look</div></div>
+  <div class="tile"><div class="n" id="tEn">–</div><div class="k">English</div></div>
+  <div class="tile"><div class="n" id="tHi">–</div><div class="k">Hindi</div></div>
+  <div class="tile"><div class="n" id="tPa">–</div><div class="k">Punjabi</div></div>
+</div>
+
+<div class="controls">
+  <input id="search" type="search" placeholder="Search name, role, town, college, phone…">
+  <select id="language">
+    <option value="">All languages</option>
+    <option value="en">English</option>
+    <option value="hi">Hindi</option>
+    <option value="pa">Punjabi</option>
+  </select>
+  <button id="checkAddresses" type="button">Check addresses against India Post</button>
+  <select id="only">
+    <option value="">Everything</option>
+    <option value="problems">Only ones needing a look</option>
+    <option value="corrected">Only ones that were corrected</option>
+    <option value="printed">Only printed</option>
+  </select>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>When</th><th>Name</th><th>Applying for</th><th>Contact</th>
+      <th>Town &amp; PIN</th><th>Education</th><th></th>
+    </tr>
+  </thead>
+  <tbody id="rows"></tbody>
+</table>
+<div class="empty" id="empty" hidden>Nothing here yet.</div>
+
+<dialog id="sheet"><div class="sheet" id="sheetBody"></div></dialog>
+
+<script>
+const el = id => document.getElementById(id);
+let ALL = [];
+
+const when = seconds => {
+  if (!seconds) return "—";
+  const d = new Date(seconds * 1000);
+  return d.toLocaleDateString(undefined, {day:"2-digit", month:"short"})
+       + " " + d.toLocaleTimeString(undefined, {hour:"2-digit", minute:"2-digit"});
+};
+const escape = text => String(text ?? "").replace(/[&<>"]/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const dash = text => text ? escape(text) : '<span class="muted">—</span>';
+
+async function load() {
+  const response = await fetch("/dashboard/api/profiles");
+  if (!response.ok) { el("source").textContent = "Could not read the records."; return; }
+  const data = await response.json();
+  ALL = data.profiles;
+  el("tTotal").textContent = data.total;
+  el("tPrinted").textContent = data.printed;
+  el("tProblems").textContent = data.with_problems;
+  el("tEn").textContent = data.languages.en;
+  el("tHi").textContent = data.languages.hi;
+  el("tPa").textContent = data.languages.pa;
+  const db = data.database || {};
+  el("source").textContent = data.source === "mongodb"
+    ? `MongoDB — ${db.database} on ${db.url || "this machine"}, ${db.sessions} interviews stored`
+    : "MongoDB is not reachable — reading data/sessions from disk";
+  draw();
+}
+
+function draw() {
+  const term = el("search").value.trim().toLowerCase();
+  const language = el("language").value;
+  const only = el("only").value;
+  const rows = ALL.filter(p => {
+    if (language && p.language !== language) return false;
+    if (only === "problems" && !p.problems.length) return false;
+    if (only === "corrected" && !p.corrections.length) return false;
+    if (only === "printed" && !p.printed) return false;
+    if (!term) return true;
+    return [p.name, p.role, p.location, p.institution, p.phone, p.email, p.degree]
+      .join(" ").toLowerCase().includes(term);
+  });
+  el("empty").hidden = rows.length > 0;
+  el("rows").innerHTML = rows.map(p => `
+    <tr data-id="${escape(p.id)}">
+      <td class="mono muted">${when(p.created_at)}
+          <span class="pill lang">${escape(p.language || "?")}</span></td>
+      <td><b>${dash(p.name)}</b></td>
+      <td>${dash(p.role)}</td>
+      <td class="mono">${dash(p.phone)}<br>${dash(p.email)}</td>
+      <td>${dash(p.location)}</td>
+      <td>${dash(p.degree)}<br><span class="muted">${escape(p.institution || "")}
+          ${escape(p.year || "")}</span></td>
+      <td>${p.problems.map(t => `<span class="pill bad">${escape(t)}</span>`).join(" ")}
+          ${POSTAL[p.id] ? postalPill(POSTAL[p.id]) : ""}
+          ${p.corrections.length
+              ? `<span class="pill fix">${p.corrections.length} fixed</span>` : ""}
+          ${p.printed ? '<span class="pill ok">printed</span>' : ""}</td>
+    </tr>`).join("");
+}
+
+// Verdicts from the live postal directory, filled in by the button. Kept separate from
+// the profiles themselves: this is what India Post says today, not what was recorded.
+let POSTAL = {};
+
+function postalPill(result) {
+  const good = result.verdict === "matches";
+  const soft = result.verdict === "unverified" || result.verdict === "could not check";
+  return `<span class="pill ${good ? "ok" : soft ? "fix" : "bad"}"
+    title="${escape(result.detail || "")}">PIN: ${escape(result.verdict)}</span>`;
+}
+
+async function checkAddresses() {
+  const button = el("checkAddresses");
+  button.disabled = true;
+  button.textContent = "Asking India Post…";
+  try {
+    const response = await fetch("/dashboard/api/addresses");
+    if (response.ok) {
+      POSTAL = Object.fromEntries((await response.json()).checked.map(r => [r.id, r]));
+      draw();
+    }
+  } finally {
+    button.disabled = false;
+    button.textContent = "Check addresses against India Post";
+  }
+}
+
+async function open(id) {
+  const response = await fetch(`/dashboard/api/profile/${encodeURIComponent(id)}`);
+  if (!response.ok) return;
+  const row = await response.json();
+  const p = row.profile || {};
+  const summary = ALL.find(s => s.id === id) || {};
+  const field = (key, value) => value
+    ? `<dt>${escape(key)}</dt><dd>${escape(value)}</dd>` : "";
+  el("sheetBody").innerHTML = `
+    <button class="close" onclick="document.getElementById('sheet').close()">×</button>
+    <h2>${escape(p.name || "Unnamed")}</h2>
+    <div class="sub">${escape(id)}</div>
+    <h3>Profile</h3>
+    <dl class="kv">
+      ${field("Applying for", p.target_role)}
+      ${field("Phone", p.phone)}${field("Email", p.email)}
+      ${field("Location", p.location)}
+      ${(p.education || []).map(e => field("Education",
+          [e.degree, e.institution, e.location, e.year].filter(Boolean).join(" — "))).join("")}
+      ${(p.experience || []).map(e => field("Experience",
+          [e.title, e.company, [e.start, e.end].filter(Boolean).join(" – ")]
+            .filter(Boolean).join(" — "))).join("")}
+      ${field("Skills", (p.skills || []).join(", "))}
+    </dl>
+    ${p.summary ? `<h3>Summary</h3><div class="turn">${escape(p.summary)}</div>` : ""}
+    ${(summary.problems || []).length ? `<h3>Needs a look</h3>` +
+       summary.problems.map(t => `<span class="pill bad">${escape(t)}</span>`).join(" ") : ""}
+    ${(p._corrections || []).length ? `<h3>Corrected automatically</h3>` +
+       p._corrections.map(c => `<div class="turn"><b>${escape(c.field)}</b>
+         ${escape(c.from || "—")} → ${escape(c.to || "(removed)")}
+         ${c.reason ? `<span class="muted">(${escape(c.reason)})</span>` : ""}</div>`).join("")
+     : ""}
+    ${summary.pdf_url ? `<h3>Resume</h3>
+       <a href="${escape(summary.pdf_url)}" target="_blank">Open the PDF</a>` : ""}
+    ${(row.transcript || []).length ? `<h3>What was said</h3>` +
+       row.transcript.filter(m => !m.content.startsWith("(")).map(m =>
+         `<div class="turn"><b>${m.role === "assistant" ? "Kiosk" : "Candidate"}:</b>
+          ${escape(m.content)}</div>`).join("") : ""}`;
+  el("sheet").showModal();
+}
+
+el("rows").addEventListener("click", event => {
+  const row = event.target.closest("tr[data-id]");
+  if (row) open(row.dataset.id);
+});
+for (const id of ["search", "language", "only"]) {
+  el(id).addEventListener("input", draw);
+}
+el("checkAddresses").addEventListener("click", checkAddresses);
+el("sheet").addEventListener("click", event => {
+  if (event.target.id === "sheet") el("sheet").close();   // click the backdrop to dismiss
+});
+load();
+</script>
+</body>
+</html>

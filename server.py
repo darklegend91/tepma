@@ -3,6 +3,7 @@
 Routes served by default - the resume kiosk and nothing else:
   /             redirects to /assistant
   /assistant    the hands-free resume interview
+  /dashboard    every interview taken here (ENABLE_DASHBOARD=1; off by default)
   WS /interview  one socket that runs an entire interview
   /assistant/api/*, /auto/*   the older step-by-step APIs, still available
   /system/*     printer and database status
@@ -22,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 import routes_auto
+import routes_dashboard
 import routes_session
 import routes_assistant
 import routes_documents
@@ -41,6 +43,8 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
 
 app.include_router(routes_session.router)      # WS /interview - the whole interview
 app.include_router(routes_auto.router)
+if routes_dashboard.ENABLED:                  # ENABLE_DASHBOARD=1 - see routes_dashboard
+    app.include_router(routes_dashboard.router)
 app.include_router(routes_assistant.router)
 if LEGACY_PAGES or routes_assistant.ENABLE_DOCUMENTS:
     app.include_router(routes_documents.router)     # the document branch views PDFs here

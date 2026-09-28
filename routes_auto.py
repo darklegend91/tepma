@@ -489,8 +489,13 @@ def _profile_gaps(profile: dict) -> list[str]:
     if not profile.get("skills"):
         gaps.append("skills")
     # A PIN is the test, not a non-empty string: asked for a location it never heard, the
-    # extractor will happily infer a plausible city from the college name.
-    if not re.search(r"\b\d{6}\b", (profile.get("location") or "")):
+    # extractor will happily infer a plausible city from the college name. And six digits
+    # are not a PIN: one resume went out reading "Rajpura, 166001" - Rajpura's PIN is
+    # 140401, and 166001 is not a PIN at all. The postal directory says so, in a warning
+    # the facts layer leaves on the profile, so ask again rather than print it.
+    impossible_pin = any(w.get("code") in {"pincode_not_found", "pincode_place_not_matched"}
+                         for w in profile.get("_validation_warnings") or [])
+    if impossible_pin or not re.search(r"\b\d{6}\b", (profile.get("location") or "")):
         gaps.append("location")
     return gaps[:MAX_GAP_QUESTIONS]
 
@@ -504,10 +509,11 @@ async def enter_gap_phase(s: dict) -> dict:
     """
     s["phase"] = "gaps"
     s["followups"] = 0
+    draft: dict = {}
     try:
         draft = await _build_profile(s)
     except HTTPException:
-        gaps = []
+        gaps = []           # extraction failed; the fixed questions still ran
     else:
         gaps = _profile_gaps(draft)
 
@@ -516,8 +522,17 @@ async def enter_gap_phase(s: dict) -> dict:
     # asked for one it never heard, the extractor infers a plausible city from the college
     # name - it produced "Rajpura, 140401" on one pass and "Rajpura" on the next from the
     # same transcript. A resume must not carry an address nobody gave.
+    said_a_pin = re.search(r"\b\d{6}\b", _said_by_candidate(s))
+    # Read from the draft, not from `gaps`: the gap list is capped at MAX_GAP_QUESTIONS
+    # and location sits at the end of it, so a truncated list would drop the very thing
+    # the postal directory just objected to.
+    bad_pin = any(w.get("code") in {"pincode_not_found", "pincode_place_not_matched"}
+                  for w in draft.get("_validation_warnings") or [])
     gaps = [gap for gap in gaps if gap != "location"]
-    if not re.search(r"\b\d{6}\b", _said_by_candidate(s)):
+    # Ask for the PIN when none was ever spoken, and ask again when the one that was
+    # spoken is not a real PIN code - in both cases the resume would otherwise carry an
+    # address nobody can post a letter to.
+    if not said_a_pin or bad_pin:
         gaps.insert(0, "location")
     s["gaps"] = gaps[:MAX_GAP_QUESTIONS]
     _save(s)

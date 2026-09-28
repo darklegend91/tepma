@@ -56,8 +56,15 @@ def institutions() -> list[str]:
 def pin_ranges() -> dict[str, str]:
     global _pin_ranges
     if _pin_ranges is None:
-        data = json.loads((REF_DIR / "pincode_ranges.json").read_text())
-        _pin_ranges = {k: v for k, v in data.items() if not k.startswith("_")}
+        try:
+            data = json.loads((REF_DIR / "pincode_ranges.json").read_text())
+            _pin_ranges = {k: v for k, v in data.items() if not k.startswith("_")}
+        except (OSError, json.JSONDecodeError, AttributeError):
+            # Same contract as institutions(): a missing reference file costs accuracy,
+            # never an interview. Without it the offline fallback simply declines to
+            # guess a state.
+            print("facts: pincode_ranges.json unavailable - no offline PIN fallback")
+            _pin_ranges = {}
     return _pin_ranges
 
 
@@ -326,6 +333,9 @@ def correct_institution(name: str) -> tuple[str, float]:
 # ------------------------------------------------------------- pincode handling
 
 PIN_RE = re.compile(r"\b(\d{6})\b")
+# "PIN 140401", "pin code 140401", "pincode- 140401" as spoken and transcribed.
+_LABELLED_PIN = re.compile(r"\b(?:pin|pincode|pin\s*code|postal\s*code)\b[\s:.-]*",
+                           re.IGNORECASE)
 
 # Department of Posts' All India Pincode Directory, exposed through data.gov.in.
 # The API key below is the public key published with the resource; deployments can
@@ -973,7 +983,13 @@ def apply_facts(profile: dict, transcript: str = "") -> dict:
         if warning not in validation_warnings:
             validation_warnings.append(warning)
 
-    location = profile.get("location", "")
+    # "Rajpura, PIN 140401" is how it comes back when the candidate says the words out
+    # loud. The label is not part of an address and does not belong on a resume.
+    location = _LABELLED_PIN.sub("", profile.get("location", "")).strip(" ,")
+    if location != profile.get("location", ""):
+        corrections.append({"field": "location", "from": profile["location"],
+                            "to": location, "confidence": 1.0})
+        profile["location"] = location
     pin = lookup_pincode(location)
     if pin and pin["verified"] and pin["place_match"] is False:
         # The PIN itself is valid, but none of its post offices/district/state names
@@ -1014,6 +1030,20 @@ def apply_facts(profile: dict, transcript: str = "") -> dict:
                 "confidence": pin["confidence"],
                 "source": pin["source"],
             })
+    elif pin is None and PIN_RE.search(location):
+        # lookup_pincode returns None only when the directory answered and had no such
+        # PIN - being offline gives a result with verified=False instead. So this is a
+        # six-digit number that is not an Indian PIN code, and it was going onto the
+        # resume as the candidate's address without a word: one interview printed
+        # "Rajpura, 166001", a town whose real PIN is 140401.
+        warning = {
+            "field": "location",
+            "code": "pincode_not_found",
+            "value": location,
+            "pincode": PIN_RE.search(location).group(1),
+        }
+        if warning not in validation_warnings:
+            validation_warnings.append(warning)
 
     if corrections:
         profile["_corrections"] = corrections

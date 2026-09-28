@@ -272,5 +272,57 @@ class PublicResumeTests(unittest.TestCase):
         self.assertEqual(result["experience"][0]["company"], "Sharma Motors")
 
 
+class AddressTests(unittest.TestCase):
+    """A resume must not carry an address no letter can reach."""
+
+    def test_a_pin_that_does_not_exist_is_flagged(self):
+        from facts import apply_facts
+
+        # 166001 has a real Chandigarh prefix and was never allocated. One resume went
+        # out reading "Rajpura, 166001"; Rajpura's PIN is 140401.
+        profile = apply_facts({"location": "Rajpura, 166001"})
+        codes = [w.get("code") for w in profile.get("_validation_warnings") or []]
+        self.assertIn("pincode_not_found", codes)
+
+    def test_an_impossible_pin_is_re_asked(self):
+        import routes_auto
+
+        # An otherwise complete profile, so the gap list is not already full: the cap is
+        # MAX_GAP_QUESTIONS and location is the last thing appended. enter_gap_phase puts
+        # it back at the front when the directory objected - this checks the test itself.
+        complete = {
+            "name": "Aditya Pathania", "email": "a@b.com", "phone": "9876543210",
+            "target_role": "Carpenter", "education": [{"institution": "ITI Hamirpur"}],
+            "experience": [{"title": "Intern"}], "skills": ["Carpentry"],
+            "location": "Rajpura, 166001",
+            "_validation_warnings": [{"field": "location", "code": "pincode_not_found"}],
+        }
+        self.assertEqual(routes_auto._profile_gaps(complete), ["location"])
+        del complete["_validation_warnings"]
+        complete["location"] = "Rajpura, 140401"
+        self.assertEqual(routes_auto._profile_gaps(complete), [])
+
+    def test_the_spoken_label_is_not_part_of_the_address(self):
+        from facts import apply_facts
+
+        profile = apply_facts({"location": "Rajpura, PIN 140401"})
+        self.assertNotIn("PIN", profile["location"])
+
+    def test_a_missing_pin_reference_file_does_not_raise(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import facts
+
+        try:
+            with patch.object(facts, "_pin_ranges", None), \
+                 patch.object(facts, "REF_DIR", Path(tempfile.gettempdir()) / "tepma-absent"):
+                self.assertEqual(facts.pin_ranges(), {})
+        finally:
+            facts._pin_ranges = None
+
+
 if __name__ == "__main__":
     unittest.main()
