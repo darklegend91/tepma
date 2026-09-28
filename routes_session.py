@@ -151,6 +151,8 @@ class Session:
         self.mic = Microphone()
         self.controls: asyncio.Queue = asyncio.Queue()
         self.closed = False
+        # Audio for the next question, voiced ahead of time - see prefetch_next_question.
+        self.ready_audio: bytes | None = None
         self.state: dict | None = None      # the routes_auto session dict
         self.session_id: str | None = None
         self.language = "en"
@@ -206,6 +208,14 @@ class Session:
         await self.send(type="say", text=text, language=language)
 
         self.mic.muted = True
+        # Already voiced while the candidate was answering the previous question.
+        prepared, self.ready_audio = self.ready_audio, None
+        if prepared is not None:
+            audio = prepared
+            if not self.closed:
+                await self.ws.send_bytes(audio)
+                await self._await_playback(audio)
+            return
         try:
             # Bounded: a misconfigured synthesizer hangs rather than raising - an espeak-ng
             # pointed at a data directory that does not exist froze the first uncached line
@@ -338,6 +348,9 @@ async def _run_interview(session: Session):
     question = await routes_auto.ask_question(state)
     state["messages"].append({"role": "assistant", "content": question})
     routes_auto.save_session(state)
+    # Write and voice question two while question one is still being answered. Nothing
+    # about it depends on the answer - the order is fixed and the server owns it.
+    routes_auto.start_preparing_next(state)
 
     unclear = 0
     while True:
@@ -359,8 +372,11 @@ async def _run_interview(session: Session):
                            collected=min(state["index"], len(routes_auto.SECTIONS)),
                            total=len(routes_auto.SECTIONS))
         routes_auto.begin_turn(state, answer)
-        question = await routes_auto.ask_question(state)
+        ready = await routes_auto.take_ready_question(state)
+        question = ready["text"] if ready else await routes_auto.ask_question(state)
+        session.ready_audio = ready["audio"] if ready else None
         turn = routes_auto.finish_turn(state, {"reply": question})
+        routes_auto.start_preparing_next(state)
 
         if turn["needs_gap_check"]:
             await session.say(turn["reply"])            # "thank you, preparing it now"

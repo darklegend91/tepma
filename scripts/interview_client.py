@@ -21,6 +21,10 @@ import time
 import websockets
 
 URL = os.getenv("TEPMA_WS", "ws://127.0.0.1:8000/interview")
+# Typed answers arrive the instant a question ends, which no person does: a candidate
+# speaks for several seconds and the server then transcribes it. THINK_S puts that time
+# back, so the measured question latency is the one a visitor would actually experience.
+THINK_S = float(os.getenv("THINK_S", "0"))
 
 # One candidate, three languages. Every answer carries something the resume must not lose:
 # a spelled name, a ten-digit number, a year, and "forty percent" - the figure that used to
@@ -93,6 +97,8 @@ async def main():
                 if question_at is not None:
                     waits.append(("question", time.perf_counter() - question_at))
                 reply = answers.pop(0) if answers else ANSWERS[language][-1]
+                if THINK_S:
+                    await asyncio.sleep(THINK_S)
                 print(f"  <-   {reply[:70]}")
                 await ws.send(json.dumps({"type": "text", "text": reply}))
                 question_at = time.perf_counter()

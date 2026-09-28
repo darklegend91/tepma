@@ -317,6 +317,7 @@ async def auto_start(payload: dict):
     reply = await _ask_question(s)
     s["messages"].append({"role": "assistant", "content": reply})
     _save(s)
+    start_preparing_next(s)     # write question two while question one is being answered
     return {"session_id": session_id, "reply": reply, "done": False,
             "language": language, "section": SECTION_IDS[0], "gap": None,
             "collected": 0, "total": len(SECTIONS)}
@@ -382,7 +383,10 @@ async def auto_turn(payload: dict):
         raise HTTPException(400, "Empty answer")
 
     _begin_turn(s, answer)
-    return _finish_turn(s, {"reply": await _ask_question(s)})
+    ready = await take_ready_question(s)
+    turn = _finish_turn(s, {"reply": ready["text"] if ready else await _ask_question(s)})
+    start_preparing_next(s)
+    return turn
 
 
 def _asking_for(s: dict) -> str | None:
@@ -465,6 +469,109 @@ def _begin_turn(s: dict, answer: str):
         s["index"] += 1
     elif s["phase"] == "gaps" and s["gaps"]:
         s["gaps"].pop(0)
+
+
+# ----------------------------------------------------------- asking the next one early
+
+# How long to wait for a question that is nearly ready before giving up and streaming it
+# instead. Only covers the last moments of a preparation that began while the candidate
+# was still talking.
+READY_GRACE_S = float(os.getenv("READY_GRACE_S", "0.35"))
+
+
+def _next_state(s: dict) -> dict | None:
+    """The session as it will be if this answer is accepted, or None if nothing follows.
+
+    A shallow copy with the pointer moved on. The interview's order is fixed and the
+    server owns it, so what comes next is known the moment a question is asked - there is
+    no need to wait for the answer to find out.
+    """
+    ahead = {**s, "followups": 0}
+    if s["phase"] == "sections" and s["index"] < len(SECTIONS):
+        ahead["index"] = s["index"] + 1
+        if ahead["index"] >= len(SECTIONS):
+            return None                 # the gap pass decides what comes after the last
+    elif s["phase"] == "gaps" and s["gaps"]:
+        ahead["gaps"] = s["gaps"][1:]
+        if not ahead["gaps"]:
+            return None
+    else:
+        return None
+    return ahead
+
+
+async def prefetch_next_question(s: dict) -> dict | None:
+    """Write and voice the next question while the candidate is still answering this one.
+
+    The measured wait between a candidate finishing and the kiosk speaking was the model
+    writing the question (0.84s) and Kokoro saying it (0.61s) - and both of those were
+    happening in the silence after the answer, when they could have happened during it.
+    Nothing here depends on what the candidate is about to say: the interview's order is
+    fixed, and the question for the next section is decided entirely by which section it
+    is. So it is prepared now, in the background, and served from memory when the answer
+    arrives.
+
+    Best-effort in every direction. A failure, a cancelled session or an answer that does
+    not advance the interview all just mean the question is written the old way, in the
+    moment. It is stored against the field it asks about, so it can never be served for
+    the wrong one.
+    """
+    ahead = _next_state(s)
+    if ahead is None:
+        return None
+    field = _asking_for(ahead)
+    if field is None:
+        return None
+    language = s.get("language", "en")
+    text = await _ask_question(ahead)
+    audio = await asyncio.to_thread(synthesize_wav, text, language,
+                                    is_scripted(text, language))
+    return {"field": field, "text": text, "audio": audio, "language": language}
+
+
+def start_preparing_next(s: dict) -> None:
+    """Begin preparing the next question, and keep the task so it is not collected."""
+    pending = s.get("preparing")
+    if pending and not pending[1].done():
+        pending[1].cancel()
+    ahead = _next_state(s)
+    field = _asking_for(ahead) if ahead else None
+    if field is None:
+        s["preparing"] = None
+        return
+    s["preparing"] = (field, asyncio.create_task(prefetch_next_question(s)))
+
+
+async def take_ready_question(s: dict) -> dict | None:
+    """The question prepared earlier, if it is the one now being asked.
+
+    Only if it is actually ready, give or take a moment. The prepared question is one
+    whole piece of audio, where writing it here streams sentence by sentence and speaks
+    the first one while the rest is still being written - so waiting on a preparation that
+    has barely started is slower than not having started it at all. Measured on five
+    questions answered the instant they ended: 3.90s waiting for it, against 1.45s
+    streaming. With any human pause before the answer it is ready, and the wait is 0.03s.
+    """
+    pending, s["preparing"] = s.get("preparing"), None
+    if not pending:
+        return None
+    field, task = pending
+    # A re-ask has to be phrased differently, and an interview that went somewhere else
+    # needs a different question entirely. Either way, throw this one away.
+    if field != _asking_for(s) or s["followups"]:
+        task.cancel()
+        return None
+    try:
+        ready = await asyncio.wait_for(asyncio.shield(task), timeout=READY_GRACE_S)
+    except asyncio.TimeoutError:
+        task.cancel()       # barely started: streaming it now reaches the ear sooner
+        return None
+    except Exception as exc:                # never break the interview it is helping
+        print(f"interview: the next question was not ready early ({exc})")
+        return None
+    if not ready or ready["language"] != s.get("language", "en"):
+        return None
+    return ready
 
 
 def _turn_system(s: dict) -> str:
@@ -622,9 +729,11 @@ async def auto_gap_check(payload: dict):
     if state["done"] or s["turns"] >= MAX_TURNS:
         return {"reply": "", "done": True, "phase": "gaps", "section": "gaps",
                 "collected": len(SECTIONS), "total": len(SECTIONS), "gaps": 0}
-    reply = await _ask_question(s)
+    ready = await take_ready_question(s)
+    reply = ready["text"] if ready else await _ask_question(s)
     s["messages"].append({"role": "assistant", "content": reply})
     _save(s)
+    start_preparing_next(s)
     return {"reply": reply, "done": False, "phase": "gaps", "section": "gaps",
             "collected": len(SECTIONS), "total": len(SECTIONS), "gaps": len(s["gaps"])}
 
@@ -913,6 +1022,16 @@ async def turn_stream_socket(ws: WebSocket):
             await ws.send_json({"type": "done", **_finish_turn(s, {"reply": reply})})
             return
 
+        # Prepared while the candidate was still talking: nothing to wait for.
+        ready = await take_ready_question(s)
+        if ready:
+            await ws.send_json({"type": "sentence", "text": ready["text"]})
+            await ws.send_bytes(ready["audio"])
+            turn = _finish_turn(s, {"reply": ready["text"]})
+            start_preparing_next(s)
+            await ws.send_json({"type": "done", **turn})
+            return
+
         raw, spoken, pending = "", "", ""
         async for delta in llm_stream(_turn_messages(s), _turn_system(s), TURN_SCHEMA,
                                       model=TURN_MODEL, max_tokens=TURN_MAX_TOKENS):
@@ -926,7 +1045,11 @@ async def turn_stream_socket(ws: WebSocket):
                 spoken += sentence if spoken.endswith(" ") or not spoken else " " + sentence
                 await ws.send_json({"type": "sentence", "text": sentence})
                 # Kokoro is blocking and CPU-bound - never run it on the event loop.
-                audio = await asyncio.to_thread(synthesize_wav, sentence, language)
+                # cache=True when this is one of the fixed lines: Punjabi questions are
+                # always scripted, and every candidate hears the same ones, so they were
+                # being synthesized from scratch for every person who walked up.
+                audio = await asyncio.to_thread(synthesize_wav, sentence, language,
+                                                is_scripted(sentence, language))
                 await ws.send_bytes(audio)
 
         try:
@@ -940,9 +1063,12 @@ async def turn_stream_socket(ws: WebSocket):
         tail = (result.get("reply") or "")[len(spoken):].strip()
         if tail:
             await ws.send_json({"type": "sentence", "text": tail})
-            await ws.send_bytes(await asyncio.to_thread(synthesize_wav, tail, language))
+            await ws.send_bytes(await asyncio.to_thread(
+                synthesize_wav, tail, language, is_scripted(tail, language)))
 
-        await ws.send_json({"type": "done", **_finish_turn(s, result)})
+        turn = _finish_turn(s, result)
+        start_preparing_next(s)
+        await ws.send_json({"type": "done", **turn})
     except WebSocketDisconnect:
         pass
     except HTTPException as exc:
