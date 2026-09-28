@@ -54,6 +54,13 @@ SECTIONS = [
     ("phone", "their 10-digit mobile number. Ask them to say it digit by digit."),
     ("email", "their email address. Ask them to spell it out letter by letter - people "
               "dictate addresses rather than spelling them, and it is never heard correctly."),
+    # Where they live belongs with the phone number and the email: it is the third line of
+    # the contact block on the resume, and a candidate answering "where do you live" right
+    # after "what is your email" is still thinking about how to be reached. It used to be
+    # collected only by the closing gap pass, so the kiosk said "thank you, that is
+    # everything I need" and then asked for a PIN code, which reads as an afterthought
+    # about the one field an employer needs to post anything.
+    ("location", "the town or city they live in, and its 6-digit PIN code."),
     ("target_role", "the job profile or role they want to apply for."),
     # The town matters as much as the name. "ITI" alone is not an institution - there is
     # one in nearly every district - and a garbled name ("चिपकारे इन्विरसिटी") cannot be
@@ -388,6 +395,8 @@ def _asking_for(s: dict) -> str | None:
 # Digits as people say them out loud, in the three languages the kiosk speaks. A number
 # read out in words is a perfectly good answer that normalise_phone cannot yet turn into
 # digits - the extractor does that later - so it must not be sent back as a non-answer.
+_INDIC = re.compile("[\u0900-\u097f\u0a00-\u0a7f]")
+
 _DIGIT_WORDS = (
     "zero one two three four five six seven eight nine oh double triple "
     "शून्य सुन्न जीरो एक दो तीन चार पांच पाँच छह छे सात आठ नौ "
@@ -419,6 +428,14 @@ def _answered_it(field: str | None, answer: str) -> bool:
     be trapped at question three.
     """
     if field == "email":
+        # Only when the answer is written in Latin script. normalise_email works on
+        # letters, so "आदित्य ऐट जीमेल डॉट कॉम" - a perfectly good Hindi answer, which the
+        # extractor turns into aditya@gmail.com after translation - can never satisfy it,
+        # and checking it here re-asked every Hindi and Punjabi candidate exactly once for
+        # no reason. Those answers are still checked, by the gap pass, on the extracted
+        # profile where the address is in Latin script and can be judged.
+        if _INDIC.search(answer):
+            return _is_substantive(answer)
         return bool(EMAIL_RE.match(normalise_email(answer)))
     if field == "phone":
         return normalise_phone(answer) != answer or _spoken_digits(answer) >= 10
@@ -573,18 +590,21 @@ async def enter_gap_phase(s: dict) -> dict:
     # asked for one it never heard, the extractor infers a plausible city from the college
     # name - it produced "Rajpura, 140401" on one pass and "Rajpura" on the next from the
     # same transcript. A resume must not carry an address nobody gave.
+    # The location is a section of its own now, so this is only the safety net. Two things
+    # the extracted profile cannot show on its own put it back at the front of the queue:
+    #
+    #   - the candidate never said six digits at all. Asked for a location it did not
+    #     hear, the extractor infers a plausible city from the college name - it produced
+    #     "Rajpura, 140401" on one pass and "Rajpura" on the next from the same
+    #     transcript - and a resume must not carry an address nobody gave.
+    #   - the postal directory rejected the PIN that was said. Read from the draft rather
+    #     than from `gaps`, which is capped at MAX_GAP_QUESTIONS and would drop the very
+    #     thing India Post just objected to.
     said_a_pin = re.search(r"\b\d{6}\b", _said_by_candidate(s))
-    # Read from the draft, not from `gaps`: the gap list is capped at MAX_GAP_QUESTIONS
-    # and location sits at the end of it, so a truncated list would drop the very thing
-    # the postal directory just objected to.
     bad_pin = any(w.get("code") in {"pincode_not_found", "pincode_place_not_matched"}
                   for w in draft.get("_validation_warnings") or [])
-    gaps = [gap for gap in gaps if gap != "location"]
-    # Ask for the PIN when none was ever spoken, and ask again when the one that was
-    # spoken is not a real PIN code - in both cases the resume would otherwise carry an
-    # address nobody can post a letter to.
     if not said_a_pin or bad_pin:
-        gaps.insert(0, "location")
+        gaps = ["location"] + [gap for gap in gaps if gap != "location"]
     s["gaps"] = gaps[:MAX_GAP_QUESTIONS]
     _save(s)
     return {"gaps": len(s["gaps"]), "done": not s["gaps"]}
@@ -612,8 +632,7 @@ async def auto_gap_check(payload: dict):
 def _keep_spoken_pin(s: dict, profile: dict) -> dict:
     """Put back a PIN code the candidate said but the extractor left out.
 
-    The gap pass asks for the PIN at the very end, so it is the last thing in the
-    transcript - and the extractor drops it often enough to matter: a Hindi candidate
+    The extractor drops it often enough to matter: a Hindi candidate
     answered "पिन कोड 140401" and the resume came out as just "Rajpura". The translation
     kept the PIN on every run; extraction lost it. Deterministic, and it only ever adds
     digits the candidate actually spoke - facts.py then validates the PIN and fills in the

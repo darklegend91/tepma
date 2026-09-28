@@ -117,6 +117,11 @@ SECTION_QUESTIONS: dict[str, dict[str, str]] = {
         "hi": "आपका ईमेल पता क्या है? कृपया एक-एक अक्षर करके बताइए।",
         "pa": "ਤੁਹਾਡਾ ਈਮੇਲ ਪਤਾ ਕੀ ਹੈ? ਕਿਰਪਾ ਕਰਕੇ ਇੱਕ-ਇੱਕ ਅੱਖਰ ਕਰਕੇ ਦੱਸੋ।",
     },
+    "location": {
+        "en": "Which town or city do you live in, and what is its 6-digit PIN code?",
+        "hi": "आप किस शहर में रहते हैं, और उसका 6 अंकों का पिन कोड क्या है?",
+        "pa": "ਤੁਸੀਂ ਕਿਹੜੇ ਸ਼ਹਿਰ ਵਿੱਚ ਰਹਿੰਦੇ ਹੋ, ਅਤੇ ਉਸਦਾ 6 ਅੰਕਾਂ ਦਾ ਪਿੰਨ ਕੋਡ ਕੀ ਹੈ?",
+    },
     "target_role": {
         "en": "Which job or role are you applying for?",
         "hi": "आप किस नौकरी या पद के लिए आवेदन कर रहे हैं?",

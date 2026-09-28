@@ -417,5 +417,49 @@ class PlaceholderTests(unittest.TestCase):
         self.assertEqual(profile["education"][0]["degree"], "B.Tech (Hons)")
 
 
+class QuestionFlowTests(unittest.TestCase):
+    """The order the kiosk asks in, and what it refuses to accept as an answer."""
+
+    def test_where_they_live_is_asked_with_the_rest_of_the_contact_details(self):
+        import routes_auto
+
+        # Not at the very end. It used to be collected only by the closing gap pass, so
+        # the kiosk said "thank you, that is everything I need" and then asked for a PIN.
+        order = routes_auto.SECTION_IDS
+        self.assertEqual(order[:4], ["identity", "phone", "email", "location"])
+        self.assertLess(order.index("location"), order.index("target_role"))
+
+    def test_every_section_has_scripted_wording_in_all_three_languages(self):
+        import routes_auto
+        from assistant_script import section_question
+
+        for section in routes_auto.SECTION_IDS:
+            for language in ("en", "hi", "pa"):
+                with self.subTest(section=section, language=language):
+                    self.assertTrue(section_question(section, language).strip())
+
+    def test_a_rambling_answer_is_not_an_email(self):
+        import routes_auto
+
+        self.assertFalse(routes_auto._answered_it(
+            "email", "Hello, my name is I'm a student at the University of California"))
+
+    def test_an_email_spoken_in_hindi_is_accepted(self):
+        import routes_auto
+
+        # normalise_email works on Latin letters, so a Devanagari answer can never satisfy
+        # it. Checking it here re-asked every Hindi candidate exactly once, for nothing.
+        self.assertTrue(routes_auto._answered_it("email", "आदित्य ऐट जीमेल डॉट कॉम"))
+
+    def test_a_number_read_out_in_words_is_a_phone_number(self):
+        import routes_auto
+
+        for spoken in ("Nine eight seven six five four three two one zero",
+                       "मेरा नंबर नौ आठ सात छह पांच चार तीन दो एक शून्य है"):
+            with self.subTest(spoken=spoken):
+                self.assertTrue(routes_auto._answered_it("phone", spoken))
+        self.assertFalse(routes_auto._answered_it("phone", "1,2,3,4,5,6,7,8,9,0"))
+
+
 if __name__ == "__main__":
     unittest.main()
