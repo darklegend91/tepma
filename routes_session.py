@@ -169,6 +169,11 @@ class Session:
             pass
         finally:
             self.closed = True
+            # The reader is the first to know the candidate has gone. The interview task
+            # may still be inside a synthesis call for another half a minute, so hand the
+            # microphone back here rather than making the next person wait it out.
+            if self.session_id:
+                routes_auto.release_kiosk(self.session_id)
             await self.controls.put({"type": "cancel"})
 
     async def send(self, **payload):
@@ -404,11 +409,20 @@ async def interview_socket(ws: WebSocket):
         language = start.get("language")
         session.language = language if language in routes_auto.LANGUAGES \
             else await _choose_language(session)
+        # Claim the microphone before announcing anything: a socket that is about to be
+        # told the kiosk is busy should not first report that an interview is starting.
+        try:
+            session.session_id, session.state = routes_auto.create_session(session.language)
+        except routes_auto.KioskBusy:
+            # Another interview already owns the microphone. Saying so and closing is the
+            # only safe answer: two interviews listening to one room record each other's
+            # answers - see claim_kiosk().
+            await session.send(type="error", detail="busy",
+                               message="An interview is already in progress on this kiosk.")
+            return
         await session.send(type="state", phase="sections", status="starting",
                            language=session.language, collected=0,
                            total=len(routes_auto.SECTIONS))
-
-        session.session_id, session.state = routes_auto.create_session(session.language)
         await session.send(type="session", session_id=session.session_id,
                            language=session.language)
 
@@ -430,6 +444,9 @@ async def interview_socket(ws: WebSocket):
         reader.cancel()
         if session.session_id:
             storage.save_session(session.session_id, ended_at=time.time())
+            # However this ended - finished, cancelled, or the candidate walking away -
+            # the microphone goes back so the next person is not told the kiosk is busy.
+            routes_auto.release_kiosk(session.session_id)
         try:
             await ws.close()
         except Exception:

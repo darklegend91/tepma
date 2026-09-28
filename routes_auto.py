@@ -55,7 +55,11 @@ SECTIONS = [
     ("email", "their email address. Ask them to spell it out letter by letter - people "
               "dictate addresses rather than spelling them, and it is never heard correctly."),
     ("target_role", "the job profile or role they want to apply for."),
-    ("education", "their education: highest qualification, the institution, and the year."),
+    # The town matters as much as the name. "ITI" alone is not an institution - there is
+    # one in nearly every district - and a garbled name ("चिपकारे इन्विरसिटी") cannot be
+    # matched against the reference list without somewhere to anchor it.
+    ("education", "their education: highest qualification, the institution, the town or "
+                  "city that institution is in, and the year."),
     ("experience", "their past work experience and their current job status - whether they "
                    "are working, studying, or looking for work right now. Ask for numbers "
                    "and impact where there is any."),
@@ -186,6 +190,7 @@ def _save(s: dict):
     recovers from - so it is written first and unconditionally. Mongo is the queryable
     record on top of it, and never a reason for an interview to fail.
     """
+    touch_kiosk(s["dir"].name)      # this interview is alive; keep its claim on the mic
     (s["dir"] / "transcript.json").write_text(
         json.dumps(s["messages"], indent=2, ensure_ascii=False)
     )
@@ -201,14 +206,60 @@ def _save(s: dict):
     )
 
 
+# How long an interview may go untouched before the kiosk decides nobody is standing
+# there any more. Every turn refreshes it, so this only expires on a candidate who walked
+# away or a browser tab that was closed mid-question.
+KIOSK_IDLE_S = float(os.getenv("KIOSK_IDLE_S", "90"))
+
+# The interview that currently owns the microphone: {"id": str, "at": float}, or None.
+_active: dict | None = None
+
+
+class KioskBusy(Exception):
+    """Somebody else is already being interviewed on this machine."""
+
+
+def claim_kiosk(session_id: str) -> None:
+    """Take the microphone for this interview, or refuse.
+
+    There is one microphone and one printer, and nothing used to stop two interviews
+    running against them at once. Two browser tabs on the same machine did exactly that:
+    both greeted the candidate, both listened to the same room, and each recorded the
+    answers the *other* one had asked for. The result was a printed resume for a man named
+    Ajay who does not exist, assembled from two interleaved conversations - the candidate's
+    real name never reached either transcript.
+    """
+    global _active
+    if _active and _active["id"] != session_id \
+            and time.time() - _active["at"] < KIOSK_IDLE_S:
+        raise KioskBusy(_active["id"])
+    _active = {"id": session_id, "at": time.time()}
+
+
+def touch_kiosk(session_id: str) -> None:
+    """Note that this interview is still going, so it keeps its claim."""
+    if _active and _active["id"] == session_id:
+        _active["at"] = time.time()
+
+
+def release_kiosk(session_id: str) -> None:
+    """Hand the microphone back, at the end of an interview or when one is abandoned."""
+    global _active
+    if _active and _active["id"] == session_id:
+        _active = None
+
+
 def create_session(language: str) -> tuple[str, dict]:
     """A new interview, registered and on disk. Shared by POST /auto/start and WS /interview.
+
+    Raises KioskBusy when another interview already has the microphone.
 
     The id is the only thing between /auto/resume/<id>.pdf and a stranger's phone number
     and address, so the random part is 64 bits. It used to be 16 - one guess in 65,536 per
     second of the timestamp, which is an afternoon's brute force.
     """
     session_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(8)}"
+    claim_kiosk(session_id)     # before anything is written: a refused start leaves no trace
     session_dir = DATA_DIR / session_id
     session_dir.mkdir(parents=True, exist_ok=True)
     s = {
@@ -222,6 +273,17 @@ def create_session(language: str) -> tuple[str, dict]:
     return session_id, s
 
 
+@router.get("/status")
+async def auto_status():
+    """Is somebody already being interviewed here?
+
+    The page asks before it opens its mouth. A second tab that only found out at
+    /auto/start would already have said the whole greeting out loud, over the top of the
+    interview actually in progress.
+    """
+    return {"busy": bool(_active and time.time() - _active["at"] < KIOSK_IDLE_S)}
+
+
 # Public names for the pieces WS /interview drives. The underscored originals stay so the
 # HTTP endpoints below read the same as they always did.
 @router.post("/start")
@@ -233,7 +295,12 @@ async def auto_start(payload: dict):
     # The id is the only thing between /auto/resume/<id>.pdf and a stranger's phone number
     # and address, so the random part is 64 bits. It used to be 16 - one guess in 65,536
     # per second of the timestamp, which is an afternoon's brute force.
-    session_id, s = create_session(language)
+    try:
+        session_id, s = create_session(language)
+    except KioskBusy:
+        # 409, not 500: the caller is a second browser tab, and the right thing for it to
+        # do is stop talking rather than compete for the room.
+        raise HTTPException(409, "An interview is already in progress on this kiosk.")
     reply = await _ask_question(s)
     s["messages"].append({"role": "assistant", "content": reply})
     _save(s)
@@ -378,7 +445,8 @@ GAP_DESCRIPTIONS = {
     "email": "their email address, spelled out letter by letter.",
     "phone": "their 10-digit mobile number, digit by digit.",
     "target_role": "the job profile or role they are applying for.",
-    "education": "their highest qualification, the institution and the year.",
+    "education": "their highest qualification, the institution, the town or city that "
+                 "institution is in, and the year.",
     "experience": "their work experience, current job status, or any project they can show.",
     "skills": "the main skills they would want on their resume.",
     "location": "the city they live in, and its 6-digit PIN code.",
@@ -398,7 +466,11 @@ def _profile_gaps(profile: dict) -> list[str]:
         gaps.append("phone")
     if not (profile.get("target_role") or "").strip():
         gaps.append("target_role")
-    if not profile.get("education"):
+    # An entry with no institution is not an education: "Carpentry, 2026" tells an
+    # employer nothing, and it is what comes back when the answer landed on the wrong
+    # question. The named institution is the test, not the presence of a list.
+    if not any((entry.get("institution") or "").strip()
+               for entry in profile.get("education") or []):
         gaps.append("education")
     if not profile.get("experience") and not profile.get("projects"):
         gaps.append("experience")
@@ -613,6 +685,7 @@ def _deliver(s: dict) -> dict:
     delivery = {**result, "emailed": emailed, "email_error": email_error,
                 "email_to": address if emailed else ""}
     storage.save_session(s["dir"].name, delivery=delivery, completed_at=time.time())
+    release_kiosk(s["dir"].name)    # done: the next person can walk up
     return delivery
 
 

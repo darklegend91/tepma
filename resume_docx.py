@@ -78,7 +78,9 @@ def render_resume_docx(profile: dict) -> bytes:
     if profile.get("education"):
         _section(doc, "Education")
         for edu in profile["education"]:
-            _entry(doc, f"{edu.get('degree', '')} — {edu.get('institution', '')}", edu.get("year", ""))
+            where = ", ".join(part for part in (edu.get("institution", ""),
+                                                edu.get("location", "")) if part)
+            _entry(doc, f"{edu.get('degree', '')} — {where}", edu.get("year", ""))
             if edu.get("details"):
                 doc.add_paragraph(edu["details"])
 

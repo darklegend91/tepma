@@ -123,9 +123,9 @@ SECTION_QUESTIONS: dict[str, dict[str, str]] = {
         "pa": "ਤੁਸੀਂ ਕਿਹੜੀ ਨੌਕਰੀ ਜਾਂ ਅਹੁਦੇ ਲਈ ਅਰਜ਼ੀ ਦੇ ਰਹੇ ਹੋ?",
     },
     "education": {
-        "en": "What is your highest qualification, from which institution, and in which year?",
-        "hi": "आपकी सबसे बड़ी योग्यता क्या है, किस संस्थान से, और किस वर्ष में?",
-        "pa": "ਤੁਹਾਡੀ ਸਭ ਤੋਂ ਵੱਡੀ ਯੋਗਤਾ ਕੀ ਹੈ, ਕਿਸ ਸੰਸਥਾ ਤੋਂ, ਅਤੇ ਕਿਹੜੇ ਸਾਲ ਵਿੱਚ?",
+        "en": "What is your highest qualification, from which institution, in which town or city, and in which year?",
+        "hi": "आपकी सबसे बड़ी योग्यता क्या है, किस संस्थान से, वह संस्थान किस शहर में है, और किस वर्ष में?",
+        "pa": "ਤੁਹਾਡੀ ਸਭ ਤੋਂ ਵੱਡੀ ਯੋਗਤਾ ਕੀ ਹੈ, ਕਿਸ ਸੰਸਥਾ ਤੋਂ, ਉਹ ਸੰਸਥਾ ਕਿਹੜੇ ਸ਼ਹਿਰ ਵਿੱਚ ਹੈ, ਅਤੇ ਕਿਹੜੇ ਸਾਲ ਵਿੱਚ?",
     },
     "experience": {
         "en": "Tell me about your work experience, and whether you are working, studying, or looking for work right now.",
@@ -166,9 +166,9 @@ SECTION_QUESTIONS: dict[str, dict[str, str]] = {
         "pa": "ਮੈਂ ਤੁਹਾਡੇ ਰਿਜ਼ਿਊਮੇ ਉੱਤੇ ਕਿਹੜੀ ਨੌਕਰੀ ਜਾਂ ਅਹੁਦਾ ਲਿਖਾਂ?",
     },
     "gap_education": {
-        "en": "What is your highest qualification, from which institution, and in which year?",
-        "hi": "आपकी सबसे बड़ी योग्यता क्या है, किस संस्थान से, और किस वर्ष में?",
-        "pa": "ਤੁਹਾਡੀ ਸਭ ਤੋਂ ਵੱਡੀ ਯੋਗਤਾ ਕੀ ਹੈ, ਕਿਸ ਸੰਸਥਾ ਤੋਂ, ਅਤੇ ਕਿਹੜੇ ਸਾਲ ਵਿੱਚ?",
+        "en": "What is your highest qualification, from which institution, in which town or city, and in which year?",
+        "hi": "आपकी सबसे बड़ी योग्यता क्या है, किस संस्थान से, वह संस्थान किस शहर में है, और किस वर्ष में?",
+        "pa": "ਤੁਹਾਡੀ ਸਭ ਤੋਂ ਵੱਡੀ ਯੋਗਤਾ ਕੀ ਹੈ, ਕਿਸ ਸੰਸਥਾ ਤੋਂ, ਉਹ ਸੰਸਥਾ ਕਿਹੜੇ ਸ਼ਹਿਰ ਵਿੱਚ ਹੈ, ਅਤੇ ਕਿਹੜੇ ਸਾਲ ਵਿੱਚ?",
     },
     "gap_experience": {
         "en": "Could you tell me about any work, internship or project you can show?",

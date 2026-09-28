@@ -18,6 +18,9 @@ PROFILE_SCHEMA = {
                 "properties": {
                     "degree": {"type": "string"},
                     "institution": {"type": "string"},
+                    # Where the institution is. An employer reading "ITI" learns nothing;
+                    # "ITI, Hamirpur" is a place they can check.
+                    "location": {"type": "string"},
                     "year": {"type": "string"},
                     "details": {"type": "string"},
                 },

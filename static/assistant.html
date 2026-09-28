@@ -313,6 +313,15 @@ async function runSession() {
 
   try {
     if (!SCRIPT.askLanguage) await loadScript();
+    // Before saying a word: is somebody already being interviewed on this machine? Two
+    // tabs open on one kiosk both greeted the candidate, both listened to the same room,
+    // and each stored the answers the other had asked for.
+    if (await kioskBusy()) {
+      status("An interview is already in progress on this kiosk.");
+      addMessage("assistant", "An interview is already in progress on this kiosk. "
+                            + "Please use the screen it is running on.");
+      return;
+    }
     const language = await askUntilUnderstood("askLanguage", "languageUnclear",
                                               heard => detectLanguage(heard));
     state.language = language || "en";     // a broken microphone must not deadlock a kiosk
@@ -342,6 +351,15 @@ async function runSession() {
     ui.stopBtn.hidden = true;
     ui.hearing.textContent = "";
     ui.begin.hidden = false;
+  }
+}
+
+async function kioskBusy() {
+  try {
+    const response = await fetch("/auto/status");
+    return response.ok && (await response.json()).busy === true;
+  } catch (_) {
+    return false;               // a status check that fails must not stop a real candidate
   }
 }
 

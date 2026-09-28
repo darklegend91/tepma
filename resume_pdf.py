@@ -181,7 +181,9 @@ def render_resume(profile: dict) -> bytes:
     if profile.get("education"):
         pdf.section("Education")
         for edu in profile["education"]:
-            pdf.entry_header(f"{edu.get('degree', '')} - {edu.get('institution', '')}", edu.get("year", ""))
+            where = ", ".join(part for part in (edu.get("institution", ""),
+                                                edu.get("location", "")) if part)
+            pdf.entry_header(f"{edu.get('degree', '')} - {where}", edu.get("year", ""))
             if edu.get("details"):
                 pdf.sub(edu["details"])
             pdf.ln(1)

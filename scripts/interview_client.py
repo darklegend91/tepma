@@ -31,7 +31,7 @@ ANSWERS = {
         "Nine eight seven six five four three two one zero",
         "aditya at gmail dot com",
         "I am applying for a machine learning engineer role",
-        "Computer engineering at Thapar Institute, graduated in twenty twenty five",
+        "Computer engineering at Thapar Institute in Patiala, graduated in twenty twenty five",
         "I interned at a startup for six months, right now I am looking for a job",
         "I built a search pipeline that cut latency by forty percent for twelve thousand users",
         "I live in Rajpura, PIN 140401",
@@ -41,7 +41,7 @@ ANSWERS = {
         "मेरा नंबर 9876543210 है",
         "आदित्य ऐट जीमेल डॉट कॉम",
         "मुझे मशीन लर्निंग इंजीनियर की नौकरी चाहिए",
-        "मैंने थापर इंस्टीट्यूट से कंप्यूटर इंजीनियरिंग की है, 2025 में पास हुआ",
+        "मैंने पटियाला के थापर इंस्टीट्यूट से कंप्यूटर इंजीनियरिंग की है, 2025 में पास हुआ",
         "मैंने एक स्टार्टअप में छह महीने इंटर्नशिप की, अभी नौकरी ढूंढ रहा हूँ",
         "मैंने एक सर्च पाइपलाइन बनाई जिससे लेटेंसी चालीस प्रतिशत कम हुई, बारह हज़ार यूज़र थे",
         "मैं राजपुरा में रहता हूँ, पिन कोड 140401",
@@ -51,7 +51,7 @@ ANSWERS = {
         "ਮੇਰਾ ਨੰਬਰ 9876543210 ਹੈ",
         "ਆਦਿਤਿਆ ਐਟ ਜੀਮੇਲ ਡਾਟ ਕਾਮ",
         "ਮੈਨੂੰ ਮਸ਼ੀਨ ਲਰਨਿੰਗ ਇੰਜੀਨੀਅਰ ਦੀ ਨੌਕਰੀ ਚਾਹੀਦੀ ਹੈ",
-        "ਮੈਂ ਥਾਪਰ ਇੰਸਟੀਚਿਊਟ ਤੋਂ ਕੰਪਿਊਟਰ ਇੰਜੀਨੀਅਰਿੰਗ ਕੀਤੀ ਹੈ, 2025 ਵਿੱਚ ਪਾਸ ਹੋਇਆ",
+        "ਮੈਂ ਪਟਿਆਲਾ ਦੇ ਥਾਪਰ ਇੰਸਟੀਚਿਊਟ ਤੋਂ ਕੰਪਿਊਟਰ ਇੰਜੀਨੀਅਰਿੰਗ ਕੀਤੀ ਹੈ, 2025 ਵਿੱਚ ਪਾਸ ਹੋਇਆ",
         "ਮੈਂ ਇੱਕ ਸਟਾਰਟਅੱਪ ਵਿੱਚ ਛੇ ਮਹੀਨੇ ਇੰਟਰਨਸ਼ਿਪ ਕੀਤੀ, ਹੁਣ ਨੌਕਰੀ ਲੱਭ ਰਿਹਾ ਹਾਂ",
         "ਮੈਂ ਇੱਕ ਸਰਚ ਪਾਈਪਲਾਈਨ ਬਣਾਈ ਜਿਸ ਨਾਲ ਲੇਟੈਂਸੀ ਚਾਲੀ ਪ੍ਰਤੀਸ਼ਤ ਘਟੀ, ਬਾਰਾਂ ਹਜ਼ਾਰ ਯੂਜ਼ਰ ਸਨ",
         "ਮੈਂ ਰਾਜਪੁਰਾ ਵਿੱਚ ਰਹਿੰਦਾ ਹਾਂ, ਪਿੰਨ ਕੋਡ 140401",
@@ -117,6 +117,7 @@ async def main():
         print("  location:", profile.get("location"))
         print("  percentages:", re.findall(r"(\d+)\s*%", blob), "(candidate said 40)")
         print("  English only:", not INDIC.search(blob))
+        print("  education:", json.dumps(profile.get("education"), ensure_ascii=False))
         print("  printed:", result.get("printed"), "| pdf:", result.get("pdf_url"))
     by_kind: dict[str, list[float]] = {}
     for name, seconds in waits:
