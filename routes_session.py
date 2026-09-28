@@ -69,6 +69,8 @@ SAMPLE_RATE = 16000
 
 # How many times a question is re-asked before the interview moves on regardless.
 MAX_UNCLEAR = 3
+# Longest a single line may take to synthesize before the interview carries on without it.
+SPEAK_TIMEOUT_S = float(os.getenv("SPEAK_TIMEOUT_S", "45"))
 
 LANGUAGE_WORDS = {
     "en": ("english", "angrezi", "इंग्लिश", "अंग्रेज़ी", "अंग्रेजी", "ਅੰਗਰੇਜ਼ੀ"),
@@ -195,10 +197,15 @@ class Session:
 
         self.mic.muted = True
         try:
-            audio = await asyncio.to_thread(synthesize_wav, text, language,
-                                            is_scripted(text, language))
-        except Exception as exc:
-            print(f"interview: could not speak a line ({exc})")
+            # Bounded: a misconfigured synthesizer hangs rather than raising - an espeak-ng
+            # pointed at a data directory that does not exist froze the first uncached line
+            # for minutes. Better a silent question, with its text on screen, than a kiosk
+            # that stops mid-interview.
+            audio = await asyncio.wait_for(
+                asyncio.to_thread(synthesize_wav, text, language, is_scripted(text, language)),
+                timeout=SPEAK_TIMEOUT_S)
+        except (Exception, asyncio.TimeoutError) as exc:
+            print(f"interview: could not speak a line ({type(exc).__name__}: {exc})")
             return
         if self.closed:
             raise Cancelled()

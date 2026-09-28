@@ -71,10 +71,42 @@ def get_whisper():
     return _whisper
 
 
+def _point_espeak_at_its_data():
+    """Tell espeak-ng where its phoneme tables actually are.
+
+    Kokoro pronounces text through espeak-ng, and the copy pip installs (espeakng-loader)
+    looks for its phoneme tables at the path it was *built* on - "/Users/runner/work/..." -
+    which exists on no user's machine. The failure is as bad as it gets: the C library
+    aborts the whole process, so a fresh install greets you from the speech cache and then
+    dies on the first question it has to synthesize.
+
+    A system espeak-ng (brew install espeak-ng) is therefore preferred, with the bundled
+    copy as the fallback for machines that have none.
+    """
+    system_library = Path("/opt/homebrew/lib/libespeak-ng.dylib")
+    system_data = Path("/opt/homebrew/share/espeak-ng-data")
+    try:
+        from phonemizer.backend.espeak.wrapper import EspeakWrapper
+
+        if system_library.is_file() and (system_data / "phontab").is_file():
+            EspeakWrapper.set_library(str(system_library))
+            EspeakWrapper.set_data_path(str(system_data))
+            os.environ.setdefault("ESPEAK_DATA_PATH", str(system_data))
+            return
+        import espeakng_loader
+
+        EspeakWrapper.set_library(espeakng_loader.get_library_path())
+        EspeakWrapper.set_data_path(espeakng_loader.get_data_path())
+        os.environ.setdefault("ESPEAK_DATA_PATH", espeakng_loader.get_data_path())
+    except Exception as exc:                # a system espeak-ng may already be configured
+        print(f"espeak: using the system configuration ({exc})")
+
+
 def get_tts(language: str = "en"):
     """The Kokoro pipeline for a spoken language, loaded once per language and cached."""
     code, _ = TTS_LANGUAGES.get(language, TTS_LANGUAGES["en"])
     if code not in _tts:
+        _point_espeak_at_its_data()
         from kokoro import KPipeline
         print(f"Loading Kokoro TTS (lang_code={code})...")
         _tts[code] = KPipeline(lang_code=code)
