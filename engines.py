@@ -32,6 +32,12 @@ STT_BACKEND = _setting("STT_BACKEND", "auto").lower()
 # but drops digits from spoken phone numbers (2 of 6 correct vs 5 of 6), which the
 # facts layer cannot catch when the result still looks like a valid 10-digit number.
 MLX_WHISPER_MODEL = _setting("MLX_WHISPER_MODEL", "mlx-community/whisper-large-v3-mlx")
+# The model used for the partial text shown while somebody is still talking. That text is
+# displayed and thrown away, so it does not need large-v3 - and running large-v3 for it was
+# costing the candidate the thing it was meant to save. Measured on one 5.2s utterance:
+# large-v3 1.79s, small 0.40s, tiny 0.07s. The final answer is still large-v3, which is
+# what Hindi needs; this only decides what appears on screen mid-sentence.
+MLX_PARTIAL_MODEL = _setting("MLX_PARTIAL_MODEL", "mlx-community/whisper-small-mlx")
 SILENCE_RMS = float(_setting("SILENCE_RMS", "0.005"))  # below this, do not call the model
 # Used by the faster-whisper (CPU) backend only.
 WHISPER_MODEL = _setting("WHISPER_MODEL", "small")
@@ -148,8 +154,13 @@ def _mlx_available() -> bool:
     return _mlx_ok
 
 
-def transcribe_audio(audio, fast: bool = False, language: str = "en") -> str:
+def transcribe_audio(audio, fast: bool = False, language: str = "en",
+                    draft: bool = False) -> str:
     """Transcribe a file path or float32 numpy array. fast=True uses greedy decoding.
+
+    draft=True is for text that is only shown, never kept - the running partial under the
+    microphone. It uses a much smaller model, because that text is replaced a second later
+    by the real transcription and nobody should wait for it.
 
     On Apple Silicon this runs Whisper large-v3 through MLX, on the GPU. That is not
     just an optimisation: faster-whisper (CTranslate2) has no Metal backend, so the only
@@ -160,7 +171,7 @@ def transcribe_audio(audio, fast: bool = False, language: str = "en") -> str:
     """
     if STT_BACKEND == "mlx" or (STT_BACKEND == "auto" and _mlx_available()):
         try:
-            return _transcribe_mlx(audio, language)
+            return _transcribe_mlx(audio, language, draft)
         except RuntimeError as exc:
             if not _is_metal_failure(exc):
                 raise
@@ -190,7 +201,7 @@ def _is_metal_failure(exc: Exception) -> bool:
     return "[METAL]" in text or "Command buffer execution failed" in text
 
 
-def _transcribe_mlx(audio, language: str) -> str:
+def _transcribe_mlx(audio, language: str, draft: bool = False) -> str:
     """One transcription on the Apple-Silicon GPU. Raises RuntimeError when Metal fails."""
     import mlx_whisper
 
@@ -204,7 +215,7 @@ def _transcribe_mlx(audio, language: str) -> str:
             return ""
     result = mlx_whisper.transcribe(
         audio,
-        path_or_hf_repo=MLX_WHISPER_MODEL,
+        path_or_hf_repo=MLX_PARTIAL_MODEL if draft else MLX_WHISPER_MODEL,
         language=language,
         condition_on_previous_text=False,
         # Suppress a segment when the model is both unsure and hears no speech.

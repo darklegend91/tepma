@@ -335,5 +335,66 @@ class AddressTests(unittest.TestCase):
             facts._pin_ranges = None
 
 
+class PrinterTests(unittest.TestCase):
+    """A stopped queue is not a missing printer, and a queued job is not a printed one."""
+
+    def _status(self, lpstat_output):
+        from unittest.mock import patch
+        import subprocess
+
+        import printer_status
+
+        def fake(args, **kwargs):
+            flag = args[1]
+            text = {"-d": "system default destination: Canon_LBP6030",
+                    "-p": lpstat_output,
+                    "-a": "Canon_LBP6030 accepting requests since today"}[flag]
+            return subprocess.CompletedProcess(args, 0, text, "")
+
+        with patch.object(subprocess, "run", fake):
+            return printer_status.default_printer_status()
+
+    def test_a_ready_printer_is_ready(self):
+        status = self._status("printer Canon_LBP6030 is idle.  enabled since today")
+        self.assertTrue(status["connected"])
+        self.assertEqual(status["state"], "ready")
+
+    def test_a_failed_filter_is_not_reported_as_unplugged(self):
+        # CUPS disables the whole queue after one job it could not render. Calling that
+        # "not connected" sends an operator looking for a loose cable; the fix is
+        # cupsenable, and the name is needed to run it.
+        status = self._status(
+            "printer Canon_LBP6030 disabled since today -\n\tFilter failed")
+        self.assertFalse(status["connected"])
+        self.assertEqual(status["state"], "filter_failed")
+        self.assertEqual(status["name"], "Canon_LBP6030")
+        self.assertIn("Filter failed", status["detail"])
+
+    def test_a_job_still_in_the_queue_is_not_printed(self):
+        from unittest.mock import patch
+
+        import printer_status
+        import routes_auto
+
+        with patch.object(routes_auto, "default_printer_status",
+                          lambda: {"connected": True, "name": "P", "state": "ready"}), \
+             patch.object(routes_auto, "queue_is_empty", lambda name: False), \
+             patch.object(routes_auto, "PRINT_CONFIRM_S", 0.2):
+            result = routes_auto._confirm_printed("P")
+        self.assertFalse(result["printed"])
+        self.assertEqual(result["print_status"], "queued")
+
+    def test_an_empty_queue_means_it_printed(self):
+        from unittest.mock import patch
+
+        import routes_auto
+
+        with patch.object(routes_auto, "default_printer_status",
+                          lambda: {"connected": True, "name": "P", "state": "ready"}), \
+             patch.object(routes_auto, "queue_is_empty", lambda name: True):
+            result = routes_auto._confirm_printed("P")
+        self.assertTrue(result["printed"])
+
+
 if __name__ == "__main__":
     unittest.main()

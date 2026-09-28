@@ -27,8 +27,8 @@ import mailer
 import storage
 from security import MAX_SPEAK_CHARS, websocket_origin_allowed
 from assistant_script import is_scripted, section_question
-from facts import apply_facts, date_context
-from printer_status import default_printer_status
+from facts import EMAIL_RE, apply_facts, date_context, normalise_email, normalise_phone
+from printer_status import default_printer_status, queue_is_empty
 from profile_schema import (EXTRACTOR_PROMPT, PROFILE_SCHEMA, english_transcript,
                             romanize_profile)
 from resume_docx import render_resume_docx
@@ -378,6 +378,53 @@ async def auto_turn(payload: dict):
     return _finish_turn(s, {"reply": await _ask_question(s)})
 
 
+def _asking_for(s: dict) -> str | None:
+    """Which field this turn is collecting, section or gap alike."""
+    if s["phase"] == "gaps":
+        return s["gaps"][0] if s["gaps"] else None
+    return SECTION_IDS[s["index"]] if s["index"] < len(SECTIONS) else None
+
+
+# Digits as people say them out loud, in the three languages the kiosk speaks. A number
+# read out in words is a perfectly good answer that normalise_phone cannot yet turn into
+# digits - the extractor does that later - so it must not be sent back as a non-answer.
+_DIGIT_WORDS = (
+    "zero one two three four five six seven eight nine oh double triple "
+    "शून्य सुन्न जीरो एक दो तीन चार पांच पाँच छह छे सात आठ नौ "
+    "ਸਿਫ਼ਰ ਸਿਫਰ ਜ਼ੀਰੋ ਇੱਕ ਇਕ ਦੋ ਤਿੰਨ ਚਾਰ ਪੰਜ ਛੇ ਸੱਤ ਅੱਠ ਨੌਂ ਨੌ"
+).split()
+# Split on whitespace, not on a word-character class: Python's \w excludes Devanagari and
+# Gurmukhi combining vowel marks, so "पांच" came back as "प" and "च" and was never counted.
+_EDGE_PUNCTUATION = ''' \t\n.,!?;:"'()[]{}-–—।॥'''
+
+
+def _spoken_digits(answer: str) -> int:
+    """How many digits this answer contains, counting the ones said as words."""
+    return sum(1 for word in answer.lower().split()
+               if word.strip(_EDGE_PUNCTUATION) in _DIGIT_WORDS)
+
+
+def _answered_it(field: str | None, answer: str) -> bool:
+    """Did that answer actually produce the thing that was asked for?
+
+    Two fields have a right shape, and an answer that does not have it is not an answer,
+    however long it was. This is worth checking while the candidate is still standing
+    there: one interview accepted a hallucinated lecture about the University of
+    California as an email address and a nine-digit number as a mobile, and only found
+    out at the very end, when the gap pass had to ask for both again.
+
+    The same normalisers the facts layer uses decide it, so the test is exactly "would
+    this have survived onto the resume". A wrong answer buys MAX_FOLLOWUPS re-asks and
+    then the interview moves on regardless - somebody who has no email address must not
+    be trapped at question three.
+    """
+    if field == "email":
+        return bool(EMAIL_RE.match(normalise_email(answer)))
+    if field == "phone":
+        return normalise_phone(answer) != answer or _spoken_digits(answer) >= 10
+    return _is_substantive(answer)
+
+
 def _begin_turn(s: dict, answer: str):
     """Record the answer and move the interview on, BEFORE the next question is generated.
 
@@ -392,7 +439,8 @@ def _begin_turn(s: dict, answer: str):
     s["messages"].append({"role": "user", "content": answer})
     s["turns"] += 1
 
-    if not (_is_substantive(answer) or s["followups"] >= MAX_FOLLOWUPS):
+    if not (_answered_it(_asking_for(s), answer)
+            or s["followups"] >= MAX_FOLLOWUPS):
         s["followups"] += 1
         return
     s["followups"] = 0
@@ -635,6 +683,34 @@ def _build_documents(s: dict, profile: dict) -> dict:
     return files
 
 
+# How long to wait for the page to actually come out before saying it has.
+PRINT_CONFIRM_S = float(os.getenv("PRINT_CONFIRM_S", "8"))
+
+
+def _confirm_printed(name: str) -> dict:
+    """Did the page actually print, or is it only sitting in the queue?
+
+    lpr accepting a job has never meant paper. One resume was queued at 14:37 and was
+    still there when CUPS disabled the whole printer at 14:50 for a filter failure - and
+    the candidate had been told to collect it from the printer thirteen minutes earlier.
+    So wait for the queue to drain, and check the printer did not fall over while it did.
+    """
+    deadline = time.monotonic() + PRINT_CONFIRM_S
+    while time.monotonic() < deadline:
+        state = default_printer_status()
+        if not state["connected"]:
+            return {"printed": False, "print_status": state["state"]}
+        empty = queue_is_empty(name)
+        if empty is None:
+            break                       # cannot tell; do not claim either way
+        if empty:
+            return {"printed": True, "print_status": "printed"}
+        time.sleep(0.5)
+    # Accepted, not yet out. Truthful either way: the closing line the candidate hears
+    # has a variant that does not promise a printout.
+    return {"printed": False, "print_status": "queued"}
+
+
 def _print_saved_pdf(s: dict) -> dict:
     """Print only when CUPS reports a ready default printer."""
     printer = default_printer_status()
@@ -651,12 +727,8 @@ def _print_saved_pdf(s: dict) -> dict:
         raise HTTPException(404, "Resume PDF has not been generated")
     try:
         subprocess.run(["lpr", str(pdf)], check=True, capture_output=True, timeout=30)
-        return {
-            "printed": True,
-            "print_status": "printed",
-            "printer_name": printer["name"],
-            "print_error": None,
-        }
+        return {**_confirm_printed(printer["name"]), "printer_name": printer["name"],
+                "print_error": None}
     except FileNotFoundError:
         error = "No printing system found (lpr is not available on this machine)."
     except subprocess.TimeoutExpired:

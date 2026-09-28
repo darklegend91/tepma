@@ -302,7 +302,8 @@ class Session:
             return
         buffer = buffer[-PARTIAL_WINDOW_S * SAMPLE_RATE:]
         try:
-            text = await asyncio.to_thread(transcribe_audio, buffer, True, self.language)
+            text = await asyncio.to_thread(transcribe_audio, buffer, True, self.language,
+                                           True)      # draft: shown, never kept
         except Exception:
             return
         if text and not self.closed:

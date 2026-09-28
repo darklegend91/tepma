@@ -688,6 +688,18 @@ function presentResult(result) {
   if (result.printed) {
     ui.resultSummary.className = "success-box";
     ui.resultSummary.textContent = `${title} was saved and sent to ${result.printer_name}.`;
+  } else if (result.print_status === "queued") {
+    // Accepted by CUPS but not out of the printer yet. Do not call that printed: one
+    // resume sat in the queue for thirteen minutes and then died there.
+    ui.resultSummary.className = "warning-box";
+    ui.resultSummary.textContent =
+      `${title} was saved and sent to ${result.printer_name}, but it had not come out yet. ` +
+      `Please check the printer.`;
+  } else if (PRINTER_TROUBLE[result.print_status]) {
+    ui.resultSummary.className = "warning-box";
+    ui.resultSummary.textContent =
+      `${title} was saved but not printed — ${PRINTER_TROUBLE[result.print_status](
+        result.printer_name || "the printer").replace(/^Printer: /, "")}`;
   } else if (result.print_status === "not_connected") {
     ui.resultSummary.className = "warning-box";
     ui.resultSummary.textContent = `${title} was saved. Printer not connected, so it was not printed.`;

@@ -32,9 +32,12 @@ async def live_transcribe_socket(ws: WebSocket):
     buffer = np.zeros(0, dtype=np.float32)
     last_len = 0
     busy = False
+    finishing = False       # the speaker has stopped: no more partials, they are wasted
 
     async def transcribe_and_send(final: bool):
         nonlocal busy, last_len
+        if finishing and not final:
+            return
         if busy:
             return
         if len(buffer) < 8000:  # need at least 0.5s of audio to run Whisper
@@ -47,7 +50,7 @@ async def live_transcribe_socket(ws: WebSocket):
         window = buffer if final else buffer[-PARTIAL_WINDOW_S * SAMPLE_RATE:]
         try:
             text = await asyncio.get_event_loop().run_in_executor(
-                None, transcribe_audio, window, not final, language
+                None, transcribe_audio, window, not final, language, not final
             )
             await ws.send_json({"final" if final else "partial": text})
         finally:
@@ -65,6 +68,7 @@ async def live_transcribe_socket(ws: WebSocket):
                 if len(buffer) - last_len >= needed and not busy:
                     asyncio.ensure_future(transcribe_and_send(final=False))
             elif msg.get("text") == "stop":
+                finishing = True
                 while busy:
                     await asyncio.sleep(0.05)
                 last_len = 0  # force a full final pass

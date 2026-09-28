@@ -8,6 +8,23 @@ printerStatusBar.setAttribute("aria-live", "polite");
 printerStatusBar.innerHTML = '<span class="printer-dot"></span><span>Checking printer…</span>';
 document.body.appendChild(printerStatusBar);
 
+// A printer that is plugged in but has had its queue stopped is not "not connected", and
+// telling an operator that sends them hunting for a cable. CUPS disables a whole queue
+// after one job it could not render, and then nothing prints until somebody runs
+// cupsenable - so that case in particular says what to do.
+const PRINTER_TROUBLE = {
+  filter_failed: name => `Printer: ${name} stopped after a failed job — run cupsenable ${name}`,
+  queue_disabled: name => `Printer: ${name} is disabled — run cupsenable ${name}`,
+  queue_stopped: name => `Printer: ${name} is paused — run cupsenable ${name}`,
+  not_accepting: name => `Printer: ${name} is not accepting jobs`,
+  offline: name => `Printer: ${name} is offline`,
+};
+
+function printerTrouble(printer) {
+  const describe = PRINTER_TROUBLE[printer.state];
+  return describe && printer.name ? describe(printer.name) : "Printer: Not connected";
+}
+
 async function refreshPrinterStatus() {
   const label = printerStatusBar.lastElementChild;
   try {
@@ -17,10 +34,11 @@ async function refreshPrinterStatus() {
     printerStatusBar.classList.toggle("connected", printer.connected);
     label.textContent = printer.connected
       ? `Printer: ${printer.name}`
-      : "Printer: Not connected";
+      : printerTrouble(printer);
+    printerStatusBar.title = printer.detail || "";
   } catch (_) {
     printerStatusBar.classList.remove("connected");
-    label.textContent = "Printer: Not connected";
+    label.textContent = "Printer: cannot reach the server";
   }
 }
 
