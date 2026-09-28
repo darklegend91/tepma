@@ -682,10 +682,96 @@ def normalise_email(raw: str) -> str:
     return text if EMAIL_RE.match(text) else raw
 
 
+
+# ------------------------------------------------------- dates the candidate never gave
+
+# Indian scripts write their own digits, and Whisper transcribes them as written.
+_INDIC_DIGITS = str.maketrans("०१२३४५६७८९੦੧੨੩੪੫੬੭੮੯", "01234567890123456789")
+
+_MONTHS = {
+    "january": 1, "jan": 1, "february": 2, "feb": 2, "march": 3, "mar": 3,
+    "april": 4, "apr": 4, "may": 5, "june": 6, "jun": 6, "july": 7, "jul": 7,
+    "august": 8, "aug": 8, "september": 9, "sep": 9, "sept": 9, "october": 10,
+    "oct": 10, "november": 11, "nov": 11, "december": 12, "dec": 12,
+}
+_SMALL = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+          "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+          "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+          "eighteen": 18, "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40,
+          "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90}
+
+_WORD = re.compile(r"[a-z]+")
+
+
+def _spoken_years(text: str) -> set[int]:
+    """Years said in English words, which carry no digits for the literal scan to find.
+
+    Covers the two ways anyone says a year aloud: "twenty twenty five" and "two thousand
+    twenty five", plus "nineteen ninety nine". It has to exist - a candidate who said
+    "graduated in twenty twenty five" would otherwise have their real year deleted as
+    invented, which is exactly the silent data loss this whole layer is here to prevent.
+    """
+    words = _WORD.findall(text.lower())
+    years: set[int] = set()
+    for i, word in enumerate(words):
+        if word not in _SMALL:
+            continue
+        head = _SMALL[word]
+        rest = words[i + 1:i + 4]
+        if head in (19, 20):                        # "nineteen ninety nine", "twenty five"
+            tail = 0
+            for part in rest[:2]:
+                if part not in _SMALL:
+                    break
+                tail = tail + _SMALL[part] if tail else _SMALL[part]
+            if 0 < tail < 100:
+                years.add(head * 100 + tail)
+        if head == 2 and rest[:1] == ["thousand"]:  # "two thousand twenty five"
+            tail = 0
+            for part in rest[1:3]:
+                if part not in _SMALL:
+                    break
+                tail += _SMALL[part]
+            years.add(2000 + tail)
+    return years
+
+
+def spoken_numbers(transcript: str) -> set[int]:
+    """Every number the candidate can be said to have given, however they said it."""
+    text = transcript.translate(_INDIC_DIGITS)
+    numbers = {int(match) for match in re.findall(r"\d+", text)}
+    numbers |= _spoken_years(text)
+    for name, number in _MONTHS.items():            # "July" is as good as "07"
+        if re.search(rf"\b{name}\b", text.lower()):
+            numbers.add(number)
+    return numbers
+
+
+def _grounded_date(value: str, said: set[int]) -> bool:
+    """Is every number in this date one the candidate actually gave?
+
+    The extractor is told not to invent dates and does it anyway: "six months at a
+    startup" came back as 2025-07-01 to 2025-12-31, and an ITI course with no year
+    mentioned at all was dated 2026. Those numbers go on a document the candidate hands
+    to an employer, so the rule is simply that each one has to have been said.
+    """
+    numbers = [int(n) for n in re.findall(r"\d+", value.translate(_INDIC_DIGITS))]
+    # An academic year is written "2024-25", and neither the 25 nor the year 2025 was ever
+    # said. Accept a two-digit part that closes a year the candidate gave, or the one
+    # after it - which is what that notation means.
+    short = {year % 100 for year in said if year > 1000}
+    short |= {(year + 1) % 100 for year in said if year > 1000}
+    return all(number in said or (number < 100 and number in short)
+               for number in numbers)
+
 # ------------------------------------------------------------------ entry point
 
-def apply_facts(profile: dict) -> dict:
+def apply_facts(profile: dict, transcript: str = "") -> dict:
     """Run every deterministic correction over an extracted profile.
+
+    transcript is what the candidate actually said. Given it, any date in the profile
+    built out of numbers nobody spoke is removed - see _grounded_date. Without it that
+    check is skipped, because a date cannot be contradicted by evidence that is not there.
 
     Adds a "_corrections" list describing what changed, so the UI can show the
     candidate what was auto-fixed instead of silently rewriting their answers.
@@ -702,6 +788,19 @@ def apply_facts(profile: dict) -> dict:
                 "field": "education.institution",
                 "from": original, "to": fixed, "confidence": round(score, 2),
             })
+
+    if transcript:
+        said = spoken_numbers(transcript)
+        dated = [(entry, field) for entry in profile.get("education") or []
+                 for field in ("year",)]
+        dated += [(entry, field) for entry in profile.get("experience") or []
+                  for field in ("start", "end")]
+        for entry, field in dated:
+            value = (entry.get(field) or "").strip()
+            if value and not _grounded_date(value, said):
+                entry[field] = ""
+                corrections.append({"field": f"date.{field}", "from": value, "to": "",
+                                    "confidence": 1.0, "reason": "never said"})
 
     phone = profile.get("phone", "")
     fixed_phone = normalise_phone(phone)

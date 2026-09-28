@@ -102,7 +102,12 @@ no bullet points, no emoji.
 collect, and never re-ask something the candidate already answered.
 - Probe for specifics and numbers (team size, users, percentages, years) when vague.
 - Speech recognition garbles names, emails and colleges: ask them to spell those out.
-- Candidates are in India: expect Indian colleges, cities and PIN codes."""
+- Candidates are in India: expect Indian colleges, cities and PIN codes.
+- Never promise anything that happens after this conversation. You are a machine in a \
+room, not a recruiter: you cannot call them back, shortlist them, forward their profile, \
+or be in touch. This is a kiosk that prints a resume before they walk away, and "we will \
+contact you soon" is a lie that sends people home waiting for a call that will never \
+come."""
 
 
 def _needs(s: dict) -> tuple[str | None, str | None]:
@@ -135,7 +140,8 @@ def _turn_note(s: dict) -> str:
     current = _current_need(s)
     if current is None:
         return ("(Interview status: everything has been collected. Do not ask anything. "
-                "Give a short thank-you saying their profile is being prepared.)")
+                "Give a short thank-you saying their resume is being prepared right now. "
+                "Do not say anyone will contact them, get back to them, or be in touch.)")
     if s["followups"]:
         return (f"(Interview status - not spoken by the candidate. The candidate did not "
                 f"answer the last question. Ask once more, in different words, about: "
@@ -330,6 +336,12 @@ async def _ask_question(s: dict) -> str:
     so any model failure here degrades to the fixed wording for the section instead.
     """
     language = s.get("language", "en")
+    # Nothing left to ask is not a question, so the model never phrases it. Asked for a
+    # thank-you it reliably added one of its own: "we will contact you soon" - a promise
+    # from a machine that prints a resume and forgets you, which sends people home waiting
+    # for a call. The scripted line says only what is true, and it comes from the cache.
+    if _current_need(s) is None:
+        return _scripted_question(s, language)
     if language not in PHRASED_LANGUAGES:
         return _scripted_question(s, language)
     try:
@@ -562,7 +574,9 @@ async def _build_profile(s: dict) -> dict:
     )
     # Translated first when it is not already English: extracting straight from Devanagari
     # or Gurmukhi silently changes numbers. See english_transcript().
-    transcript = await english_transcript(transcript)
+    as_spoken = transcript            # both copies ground the dates: the original carries
+    transcript = await english_transcript(transcript)   # Indic digits, the translation the
+                                                        # English words for years
     try:
         profile = await llm_extract(
             [{"role": "user", "content": f"Interview transcript:\n\n{transcript}"}],
@@ -577,7 +591,8 @@ async def _build_profile(s: dict) -> dict:
     # are Latin-only and silently miss anything still written in Devanagari.
     profile = await romanize_profile(profile)
     profile = _keep_spoken_pin(s, profile)
-    profile = await asyncio.to_thread(apply_facts, profile)
+    profile = await asyncio.to_thread(apply_facts, profile,
+                                      f"{as_spoken}\n{transcript}")
     session_dir = s["dir"]
     (session_dir / "profile.json").write_text(json.dumps(profile, indent=2, ensure_ascii=False))
     storage.save_session(session_dir.name, profile=profile,
@@ -778,6 +793,16 @@ async def turn_stream_socket(ws: WebSocket):
 
         language = s.get("language", "en")
         _begin_turn(s, answer)
+
+        # The closing line is scripted, never generated - see _ask_question.
+        if _current_need(s) is None:
+            reply = _scripted_question(s, language)
+            await ws.send_json({"type": "sentence", "text": reply})
+            # cache=True: every candidate hears this one, so it comes off the disk.
+            await ws.send_bytes(
+                await asyncio.to_thread(synthesize_wav, reply, language, True))
+            await ws.send_json({"type": "done", **_finish_turn(s, {"reply": reply})})
+            return
 
         raw, spoken, pending = "", "", ""
         async for delta in llm_stream(_turn_messages(s), _turn_system(s), TURN_SCHEMA,

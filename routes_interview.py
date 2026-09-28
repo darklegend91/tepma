@@ -79,6 +79,7 @@ async def interview_finish(payload: dict):
     )
     # Translated first when it is not already English: extracting straight from Devanagari
     # or Gurmukhi silently changes numbers. See english_transcript().
+    as_spoken = transcript
     transcript = await english_transcript(transcript)
     profile = await llm_extract(
         [{"role": "user", "content": f"Interview transcript:\n\n{transcript}"}],
@@ -90,7 +91,8 @@ async def interview_finish(payload: dict):
     # Before the facts layer, never after: the institution matcher and PIN lookup
     # are Latin-only and silently miss anything still written in Devanagari.
     profile = await romanize_profile(profile)
-    profile = await asyncio.to_thread(apply_facts, profile)
+    profile = await asyncio.to_thread(apply_facts, profile,
+                                      f"{as_spoken}\n{transcript}")
 
     session_id = time.strftime("%Y%m%d-%H%M%S")
     session_dir = DATA_DIR / session_id

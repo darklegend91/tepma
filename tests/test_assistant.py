@@ -160,5 +160,68 @@ class PageTests(unittest.TestCase):
         self.assertEqual(client.post("/interview/email", json={"to": "x@example.com"}).status_code, 404)
 
 
+class KioskLockTests(unittest.TestCase):
+    """One microphone, one interview. Two tabs once ran two at the same time and printed
+    a resume for a candidate who did not exist - see claim_kiosk()."""
+
+    def setUp(self):
+        import routes_auto
+        self.routes_auto = routes_auto
+        routes_auto._active = None
+        self.addCleanup(setattr, routes_auto, "_active", None)
+
+    def test_a_second_interview_is_refused_while_one_is_live(self):
+        self.routes_auto.claim_kiosk("first")
+        with self.assertRaises(self.routes_auto.KioskBusy):
+            self.routes_auto.claim_kiosk("second")
+
+    def test_releasing_frees_the_kiosk_for_the_next_person(self):
+        self.routes_auto.claim_kiosk("first")
+        self.routes_auto.release_kiosk("first")
+        self.routes_auto.claim_kiosk("second")      # must not raise
+
+    def test_an_abandoned_interview_expires(self):
+        import time
+
+        self.routes_auto.claim_kiosk("walked away")
+        self.routes_auto._active["at"] = time.time() - self.routes_auto.KIOSK_IDLE_S - 1
+        self.routes_auto.claim_kiosk("next person")  # must not raise
+
+
+class SpokenDateTests(unittest.TestCase):
+    """Dates only survive if the candidate said the numbers in them."""
+
+    def test_a_year_nobody_said_is_dropped(self):
+        from facts import apply_facts
+
+        profile = {"education": [{"degree": "ITI", "institution": "ITI", "year": "2026"}]}
+        result = apply_facts(profile, "Candidate: I did a carpentry course at ITI")
+        self.assertEqual(result["education"][0]["year"], "")
+
+    def test_a_year_said_in_words_is_kept(self):
+        from facts import apply_facts
+
+        profile = {"education": [{"degree": "BE", "institution": "Thapar", "year": "2025"}]}
+        result = apply_facts(profile, "Candidate: I graduated in twenty twenty five")
+        self.assertEqual(result["education"][0]["year"], "2025")
+
+    def test_invented_job_dates_are_dropped(self):
+        from facts import apply_facts
+
+        profile = {"experience": [{"title": "Intern", "company": "A startup",
+                                   "start": "2025-07-01", "end": "2025-12-31"}]}
+        result = apply_facts(profile, "Candidate: I interned at a startup for six months")
+        self.assertEqual(result["experience"][0]["start"], "")
+        self.assertEqual(result["experience"][0]["end"], "")
+
+    def test_an_academic_year_is_not_mistaken_for_an_invention(self):
+        from facts import apply_facts
+
+        profile = {"education": [{"degree": "BE", "institution": "Thapar",
+                                  "year": "2024-25"}]}
+        result = apply_facts(profile, "Candidate: I finished in 2024")
+        self.assertEqual(result["education"][0]["year"], "2024-25")
+
+
 if __name__ == "__main__":
     unittest.main()
